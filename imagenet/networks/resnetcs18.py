@@ -147,7 +147,7 @@ class ResStage(nn.Module):
         return out
 
 class ResNet18(MaskedNet):
-    def __init__(self, num_classes=10, Nbits=8, act_bit=0, bin=True):
+    def __init__(self, num_classes=1000, Nbits=8, act_bit=0, bin=True):
         super(ResNet18, self).__init__()
 
         self.conv1 = BitConv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False, Nbits=Nbits, bin=bin)

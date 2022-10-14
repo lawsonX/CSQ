@@ -11,6 +11,7 @@ import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
+import logging
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
@@ -61,7 +62,7 @@ parser.add_argument('-b',
                     'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr',
                     '--learning-rate',
-                    default=0.1,
+                    default=0.01,
                     type=float,
                     metavar='LR',
                     help='initial learning rate',
@@ -84,7 +85,7 @@ parser.add_argument('--wd',
                     dest='weight_decay')
 parser.add_argument('-p',
                     '--print-freq',
-                    default=100,
+                    default=200,
                     type=int,
                     metavar='N',
                     help='print frequency (default: 10)')
@@ -101,7 +102,15 @@ parser.add_argument('--seed',
                     default=None,
                     type=int,
                     help='seed for initializing training. ')
+parser.add_argument('--classes', type=int, default=200, help='class of output')
+parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
+parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
+parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
+parser.add_argument('--target', type=int, default=5, help='Target Nbit')
+parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
 
+parser.add_argument('--save', type=str, default='train_result/1014/TIM_FPresnet18_baseline', help='path for saving trained models')
+parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 
 def reduce_mean(tensor, nprocs):
     rt = tensor.clone()
@@ -123,6 +132,8 @@ def main():
                       'which can slow down your training considerably! '
                       'You may see unexpected behavior when restarting '
                       'from checkpoints.')
+    if not os.path.exists(args.save):
+        os.makedirs(args.save)
 
     main_worker(args.local_rank, args.nprocs, args)
 
@@ -138,6 +149,16 @@ def main_worker(local_rank, nprocs, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
+    train_log_filepath = os.path.join(args.save, args.log_file)
+    logger = get_logger(train_log_filepath)
+    logger.info("args = %s", args)
+
+    # model = ResNet18(
+    #     num_classes=args.classes,
+    #     Nbits=args.Nbits,
+    #     act_bit = args.act,
+    #     bin=True
+    #     )
 
     torch.cuda.set_device(local_rank)
     model.cuda(local_rank)
@@ -146,7 +167,9 @@ def main_worker(local_rank, nprocs, args):
     # ourselves based on the total number of GPUs we have
     args.batch_size = int(args.batch_size / nprocs)
     model = torch.nn.parallel.DistributedDataParallel(model,
-                                                      device_ids=[local_rank])
+                                                      device_ids=[local_rank],
+                                                      find_unused_parameters=True,
+                                                      )
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(local_rank)
@@ -155,78 +178,95 @@ def main_worker(local_rank, nprocs, args):
                                 args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     cudnn.benchmark = True
 
-    # Data loading code
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset)
-    train_loader = torch.utils.data.DataLoader(train_dataset,
-                                               batch_size=args.batch_size,
-                                               num_workers=args.workers,
-                                               pin_memory=True,
-                                               sampler=train_sampler)
-
-    val_dataset = datasets.ImageFolder(
-        valdir,
-        transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
-    val_loader = torch.utils.data.DataLoader(val_dataset,
-                                             batch_size=args.batch_size,
-                                             num_workers=4,
-                                             pin_memory=True,
-                                             sampler=val_sampler)
+    if args.classes == 1000:
+        train_sampler, val_sampler, train_loader, val_loader = imagenet_loader(args)
+    elif args.classes == 200:
+        train_sampler, val_sampler, train_loader, val_loader = tiny_loader(args)
 
     if args.evaluate:
-        validate(val_loader, model, criterion, local_rank, args)
+        validate(val_loader, model, criterion, local_rank, args, logger)
         return
-
+    
+    temp_increase = 200**(1./(args.epochs/2))
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
 
-        adjust_learning_rate(optimizer, epoch, args)
+        # adjust_learning_rate(optimizer, epoch, args)
+        if epoch <= 5:
+            step = epoch/5
+            lr = args.lr * step
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            scheduler.step()
+        
+        # update global temp
+        if epoch <= args.epochs/2:
+            model.temp = temp_increase**epoch
+        else:
+            _epoch = epoch - (args.epochs/2)
+            model.temp = temp_increase**_epoch
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, local_rank,
-              args)
-
+        ratio_one = get_ratio_one(model)
+        logger.info('Current R_O:%.3f'% round(ratio_one,3))
+        train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger)
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, local_rank, args)
+        acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
+
+        # validate again based on solid bit mask
+        if epoch > args.epochs*0.975:
+        #     for m in model.module.mask_modules:
+        #         m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
+        #         m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
+            solid_acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
+            logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
+            ratio_one = get_ratio_one(model)
+            solid_best_model_path = os.path.join(*[args.save, 'solid_model_best.pt'])
+            torch.save({
+                'model': model.state_dict(),
+                'epoch': epoch,
+                'valid_acc': solid_acc1,
+                'solid_ratio_one': ratio_one,
+            }, solid_best_model_path)
+            solid_best_acc = solid_acc1
+            _best_epoch = epoch+1
+            avg_bit_ = ratio_one * args.Nbits
+            logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
+
+        # if epoch <= args.epochs/2:
+        #     for m in model.module.mask_modules:
+        #         dev = m.mask_weight.device
+        #         m.sampled_iter = m.sampled_iter.to(dev)
+        #         m.temp_s = m.temp_s.to(dev)
+        #         m.mask_discrete = torch.bernoulli(m.mask).to(dev)
+        #         m.sampled_iter += m.mask_discrete
+        #         m.temp_s = temp_increase**m.sampled_iter
+        #         if epoch == args.epochs/2:
+        #             print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
         # remember best acc@1 and save checkpoint
-        is_best = acc1 > best_acc1
-        best_acc1 = max(acc1, best_acc1)
+        # is_best = acc1 > best_acc1
+        # best_acc1 = max(acc1, best_acc1)
 
-        if args.local_rank == 0:
-            save_checkpoint(
-                {
-                    'epoch': epoch + 1,
-                    'arch': args.arch,
-                    'state_dict': model.module.state_dict(),
-                    'best_acc1': best_acc1,
-                }, is_best)
+        # if args.local_rank == 0:
+        #     save_checkpoint(
+        #         {
+        #             'epoch': epoch + 1,
+        #             'arch': args.arch,
+        #             'state_dict': model.module.state_dict(),
+        #             'best_acc1': best_acc1,
+        #         }, is_best)
+        
 
 
-def train(train_loader, model, criterion, optimizer, epoch, local_rank, args):
+
+def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -239,6 +279,13 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args):
     # switch to train mode
     model.train()
 
+    # update global tempreture
+    temp_increase = 200**(1./(args.epochs/2))
+    if epoch <= args.epochs/2:
+            model.temp = temp_increase**epoch
+    
+    logger.info('Current global temp:%.3f'% round(model.temp,3))
+
     end = time.time()
     for i, (images, target) in enumerate(train_loader):
         # measure data loading time
@@ -249,7 +296,18 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args):
 
         # compute output
         output = model(images)
-        loss = criterion(output, target)
+        
+        # ratio_one = get_ratio_one(model)
+        # # logger.info('Current R_O:%.3f'% round(ratio_one,3))
+
+        # # Budget-aware adjusting lmbda according to Eq(4)
+        # TS = args.target / args.Nbits  # target ratio of ones of masks in the network
+        # regularization_loss = 0
+        # for m in model.module.mask_modules:
+        #     regularization_loss += torch.sum(torch.abs(m.mask).sum())
+        
+        classify_loss = criterion(output, target)
+        loss = classify_loss #+ (args.lmbda*(ratio_one-TS)) * regularization_loss
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -266,6 +324,7 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args):
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
+        # with torch.autograd.detect_anomaly():
         loss.backward()
         optimizer.step()
 
@@ -276,8 +335,7 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args):
         if i % args.print_freq == 0:
             progress.display(i)
 
-
-def validate(val_loader, model, criterion, local_rank, args):
+def validate(val_loader, model, criterion, local_rank, args,logger):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -319,7 +377,9 @@ def validate(val_loader, model, criterion, local_rank, args):
                 progress.display(i)
 
         # TODO: this should also be done with the ProgressMeter
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
+        # print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
+        #                                                             top5=top5))
+        logger.info(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
                                                                     top5=top5))
 
     return top1.avg
@@ -395,6 +455,95 @@ def accuracy(output, target, topk=(1, )):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
+def get_ratio_one(model):
+    mask_discrete = [m.mask_discrete for m in model.module.mask_modules]
+    total_ele = 0
+    ones = 0
+    for iter in range(len(mask_discrete)):
+        t = mask_discrete[iter].numel()
+        o = (mask_discrete[iter] == 1).sum().item()
+        # z = (mask_discrete[iter] == 0).sum().item()
+        total_ele += t
+        ones += o
+    ratio_one = ones/total_ele
+    return ratio_one
+
+
+def get_logger(filename, verbosity=1, name=None):
+    level_dict = {0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING}
+    formatter = logging.Formatter(
+        "[%(asctime)s][%(filename)s][line:%(lineno)d][%(levelname)s] %(message)s"
+    )
+    logger = logging.getLogger(name)
+    logger.setLevel(level_dict[verbosity])
+ 
+    fh = logging.FileHandler(filename, "w")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+ 
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+ 
+    return logger
+
+def tiny_loader(args):
+    data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
+    normalize = transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+    transform_train = transforms.Compose([
+        transforms.RandomResizedCrop(224), 
+        transforms.RandomHorizontalFlip(0.5), 
+        transforms.ToTensor(),
+        normalize,
+    ])
+    transform_test = transforms.Compose([transforms.Resize(224), transforms.ToTensor(), normalize, ])
+    trainset = datasets.ImageFolder(root=os.path.join(data_dir, 'train'), transform=transform_train)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(trainset)
+    
+    valset = datasets.ImageFolder(root=os.path.join(data_dir, 'val'), transform=transform_test)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(valset)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
+    val_loader = torch.utils.data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+    return train_sampler, val_sampler, train_loader, val_loader
+
+def imagenet_loader(args):
+    # Data loading code
+    traindir = os.path.join(args.data,'train')
+    valdir = os.path.join(args.data, 'val')
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_dataset = datasets.ImageFolder(
+        traindir,
+        transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ]))
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset)
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=args.batch_size,
+                                               num_workers=args.workers,
+                                               pin_memory=True,
+                                               sampler=train_sampler)
+
+    val_dataset = datasets.ImageFolder(
+        valdir,
+        transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize,
+        ]))
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                             batch_size=args.batch_size,
+                                             num_workers=4,
+                                             pin_memory=True,
+                                             sampler=val_sampler)
+    return train_sampler, val_sampler, train_loader, val_loader
 
 if __name__ == '__main__':
     main()
