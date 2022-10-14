@@ -104,19 +104,14 @@ class BitLinear(Module):
         self.bzero=False
         self.ft = False
 
-        # self.mask = Parameter(torch.empty(Nbits))
-        # self.mask_discrete = Parameter(torch.ones(Nbits))
-        # self.sampled_iter = Parameter(torch.ones(Nbits),requires_grad=False)
-        # self.temp_s = Parameter(torch.ones(Nbits),requires_grad=False)
-
         if self.bin:
             # init bit mask
             self.mask_weight = Parameter(torch.Tensor(self.Nbits))
             init.constant_(self.mask_weight, 1)
             self.mask = torch.ones(Nbits)
-            self.mask_discrete = torch.ones(Nbits).cuda()
-            self.sampled_iter = torch.ones(Nbits).cuda()
-            self.temp_s = torch.ones(Nbits).cuda()
+            self.mask_discrete = torch.ones(Nbits)#.cuda()
+            self.sampled_iter = torch.ones(Nbits)#.cuda()
+            self.temp_s = torch.ones(Nbits)#.cuda()
 
             self.pweight = Parameter(torch.Tensor(out_features, in_features, Nbits))
             self.nweight = Parameter(torch.Tensor(out_features, in_features, Nbits))
@@ -216,14 +211,16 @@ class BitLinear(Module):
         if self.bin:
             dev = self.pweight.device
             dev_m = self.mask_weight.device
-            temp_s = self.temp_s.to(dev_m)
-            self.mask = torch.sigmoid(temp_s * self.mask_weight)
-            mask = self.mask.to(dev_m)
+            self.temp_s = self.temp_s.to(dev_m)
             mask_discrete = self.mask_discrete.to(dev_m)
+            mask_discrete=self.mask_discrete.to(dev_m)
+
+            self.mask = torch.sigmoid(self.temp_s * self.mask_weight)
+            # mask = self.mask.to(dev_m)
             pweight = torch.sigmoid(temp * self.pweight)
             nweight = torch.sigmoid(temp * self.nweight)
             weight = torch.mul(pweight-nweight, self.exps)
-            masked_weight = weight * mask * mask_discrete
+            masked_weight = weight * self.mask * mask_discrete
             weight =  torch.sum(masked_weight,dim=2) * self.scale
 
             if self.pbias is not None:
@@ -286,9 +283,9 @@ class Bit_ConvNd(Module):
             self.mask_weight = Parameter(torch.Tensor(self.Nbits))
             init.constant_(self.mask_weight, 1)
             self.mask =torch.ones(Nbits)
-            self.mask_discrete = torch.ones(Nbits).cuda()
-            self.sampled_iter = torch.ones(Nbits).cuda()
-            self.temp_s = torch.ones(Nbits).cuda()
+            self.mask_discrete = torch.ones(Nbits)#.cuda()
+            self.sampled_iter = torch.ones(Nbits)#.cuda()
+            self.temp_s = torch.ones(Nbits)#.cuda()
             if transposed:
                 self.pweight = Parameter(torch.Tensor(in_channels, out_channels // groups, *kernel_size, Nbits))
                 self.nweight = Parameter(torch.Tensor(in_channels, out_channels // groups, *kernel_size, Nbits))
@@ -429,14 +426,16 @@ class BitConv2d(Bit_ConvNd):
         if self.bin:
             dev = self.pweight.device
             dev_m = self.mask_weight.device
-            temp_s = self.temp_s.to(dev_m)
-            self.mask = torch.sigmoid(temp_s * self.mask_weight)
-            mask = self.mask.to(dev_m)
+            self.temp_s = self.temp_s.to(dev_m)
+            mask_discrete = self.mask_discrete.to(dev_m)
             mask_discrete=self.mask_discrete.to(dev_m)
+
+            self.mask = torch.sigmoid(self.temp_s * self.mask_weight)
+            # mask = self.mask.to(dev_m)
             pweight = torch.sigmoid(temp * self.pweight) # continuous conversion
             nweight = torch.sigmoid(temp * self.nweight)
             weight = torch.mul(pweight-nweight, self.exps)
-            masked_weight = weight * mask * mask_discrete
+            masked_weight = weight * self.mask * mask_discrete
             weight =  torch.sum(masked_weight,dim=4) * self.scale
 
             if self.pbias is not None:
@@ -463,6 +462,6 @@ if __name__ == '__main__':
         return BitConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                         padding=1, bias=False, Nbits = Nbits, bin=bin)
     
-    x = torch.randn(64,3,224,224).to(device)
+    x = torch.randn(64,3,224,224)
     model = conv3x3(3, 64, 1, Nbits=4, bin=True)
     out = model(x)

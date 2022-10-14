@@ -13,6 +13,7 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import random
 from cifar10.network.resnetcs20 import ResNet
+from imagenet.networks.resnetcs18 import ResNet18
 from torch.utils.tensorboard import SummaryWriter
 import logging
 import matplotlib.pyplot as plt
@@ -20,20 +21,18 @@ import matplotlib.pyplot as plt
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with Continuous Sparsification')
 # parser.add_argument('--which-gpu', type=int, default=0, help='which GPU to use')
-parser.add_argument('--batch-size', type=int, default=256, metavar='N', help='input batch size for training/val/test (default: 128)')
-parser.add_argument('--epochs', type=int, default=400, help='number of epochs to train (default: 300)')
+parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
+parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 300)')
 parser.add_argument('--classes', type=int, default=10, help='class of output')
-parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
-parser.add_argument('--target', type=int, default=5, help='Target Nbit')
+parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
+parser.add_argument('--target', type=int, default=7, help='Target Nbit')
 parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
 parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 0.1)')
 parser.add_argument('--workers', type=int, default=4, help='number of data loading workers (default: 2)')
 parser.add_argument('--decay', type=float, default=5e-4, help='weight decay (default: 5e-4)')
-# parser.add_argument('--goal_acc', type=float, default=91, help='weight decay (91)')
 parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
 parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
-parser.add_argument('--final-temps', type=float, default=160, help='temperature of temp_s based on estimated maximum value of sampled iter')
-parser.add_argument('--save_dir', type=str, default='train_result/1003/A0N6T5_newLR', help='save path of weight and log files')
+parser.add_argument('--save_dir', type=str, default='train_result/1013/TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 args = parser.parse_args()
 
@@ -47,8 +46,7 @@ def get_logger(filename, verbosity=1, name=None):
  
     fh = logging.FileHandler(filename, "w")
     fh.setFormatter(formatter)
-    logger.addHandler(fh)
- 
+    logger.addHandler(fh) 
     sh = logging.StreamHandler()
     sh.setFormatter(formatter)
     logger.addHandler(sh)
@@ -87,13 +85,13 @@ def tiny_loader(args):
     data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
     normalize = transform.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
     transform_train = transform.Compose(
-        [transform.RandomResizedCrop(32), transform.RandomHorizontalFlip(), transform.ToTensor(),
+        [transform.RandomResizedCrop(224), transform.RandomHorizontalFlip(), transform.ToTensor(),
          normalize, ])
-    transform_test = transform.Compose([transform.Resize(32), transform.ToTensor(), normalize, ])
+    transform_test = transform.Compose([transform.Resize(224), transform.ToTensor(), normalize, ])
     trainset = torchvision.datasets.ImageFolder(root=os.path.join(data_dir, 'train'), transform=transform_train)
     testset = torchvision.datasets.ImageFolder(root=os.path.join(data_dir, 'val'), transform=transform_test)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
     return train_loader, test_loader
 
 def data_loader(args):
@@ -136,7 +134,7 @@ if __name__ == '__main__':
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
     #define ResNet20
-    model = ResNet(
+    model = ResNet18(
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
@@ -156,7 +154,7 @@ if __name__ == '__main__':
     lr=[]
     for epoch in range(1, args.epochs+1):
         print('\nEpoch: %d' % epoch)
-        # adjust_learning_rate(optimizer, epoch, args)
+        adjust_learning_rate(optimizer, epoch, args)
 
         model.train()
         sum_loss = 0.0
@@ -183,10 +181,9 @@ if __name__ == '__main__':
             outputs = model(inputs)
 
             # get sparsity of network at current epoch
-            ratio_one = get_ratio_one(model)
-            writer.add_scalar('Ratio of ones in bit mask', ratio_one, epoch)
 
             # Budget-aware adjusting lmbda according to Eq(4)
+            ratio_one = get_ratio_one(model)
             TS = args.target / args.Nbits  # target ratio of ones of masks in the network
             regularization_loss = 0
             for m in model.mask_modules:
@@ -209,8 +206,7 @@ if __name__ == '__main__':
             if i % 50 == 0:
                 logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,sum_loss/(i+1),train_acc ))
             writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
-        scheduler.step()
-
+        # scheduler.step()
         if epoch == args.epochs/2:
             save_name = os.path.join(*[args.save_dir, 'soft_model_last.pt'])
             torch.save({
@@ -242,6 +238,8 @@ if __name__ == '__main__':
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
                 m.mask_discrete = torch.bernoulli(m.mask)
+                logger.info(m.mask)
+                logger.info(m.mask_discrete)
             # test again after finalizing the soft bitmask to 0&1
             with torch.no_grad():
                 _correct = 0
@@ -268,7 +266,7 @@ if __name__ == '__main__':
             _best_epoch = epoch+1
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
-        
+
         # update temp_s based on sampled_iter per epoch
         if epoch <= args.epochs*0.875:
             compute_mask(model)

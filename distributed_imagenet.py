@@ -118,7 +118,6 @@ def reduce_mean(tensor, nprocs):
     rt /= nprocs
     return rt
 
-
 def main():
     args = parser.parse_args()
     args.nprocs = torch.cuda.device_count()
@@ -221,9 +220,9 @@ def main_worker(local_rank, nprocs, args):
 
         # validate again based on solid bit mask
         if epoch > args.epochs*0.975:
-        #     for m in model.module.mask_modules:
-        #         m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
-        #         m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
+            for m in model.module.mask_modules:
+                m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
+                m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
             solid_acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
             logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
             ratio_one = get_ratio_one(model)
@@ -239,30 +238,8 @@ def main_worker(local_rank, nprocs, args):
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
-        # if epoch <= args.epochs/2:
-        #     for m in model.module.mask_modules:
-        #         dev = m.mask_weight.device
-        #         m.sampled_iter = m.sampled_iter.to(dev)
-        #         m.temp_s = m.temp_s.to(dev)
-        #         m.mask_discrete = torch.bernoulli(m.mask).to(dev)
-        #         m.sampled_iter += m.mask_discrete
-        #         m.temp_s = temp_increase**m.sampled_iter
-        #         if epoch == args.epochs/2:
-        #             print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
-
-        # remember best acc@1 and save checkpoint
-        # is_best = acc1 > best_acc1
-        # best_acc1 = max(acc1, best_acc1)
-
-        # if args.local_rank == 0:
-        #     save_checkpoint(
-        #         {
-        #             'epoch': epoch + 1,
-        #             'arch': args.arch,
-        #             'state_dict': model.module.state_dict(),
-        #             'best_acc1': best_acc1,
-        #         }, is_best)
-        
+        if epoch <= args.epochs*0.875:
+            compute_mask(model, epoch, temp_increase, args)
 
 
 
@@ -297,17 +274,17 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
         # compute output
         output = model(images)
         
-        # ratio_one = get_ratio_one(model)
-        # # logger.info('Current R_O:%.3f'% round(ratio_one,3))
+        ratio_one = get_ratio_one(model)
+        # logger.info('Current R_O:%.3f'% round(ratio_one,3))
 
-        # # Budget-aware adjusting lmbda according to Eq(4)
-        # TS = args.target / args.Nbits  # target ratio of ones of masks in the network
-        # regularization_loss = 0
-        # for m in model.module.mask_modules:
-        #     regularization_loss += torch.sum(torch.abs(m.mask).sum())
+        # Budget-aware adjusting lmbda according to Eq(4)
+        TS = args.target / args.Nbits  # target ratio of ones of masks in the network
+        regularization_loss = 0
+        for m in model.module.mask_modules:
+            regularization_loss += torch.sum(torch.abs(m.mask).sum())
         
         classify_loss = criterion(output, target)
-        loss = classify_loss #+ (args.lmbda*(ratio_one-TS)) * regularization_loss
+        loss = classify_loss + (args.lmbda*(ratio_one-TS)) * regularization_loss
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -454,6 +431,14 @@ def accuracy(output, target, topk=(1, )):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+def compute_mask(model,epoch, temp_increase, args):
+    for m in model.mask_modules:
+        m.mask_discrete = torch.bernoulli(m.mask)
+        m.sampled_iter += m.mask_discrete
+        m.temp_s = temp_increase**m.sampled_iter
+        if epoch in [args.epochs/2, args.epochs] :
+            print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def get_ratio_one(model):
     mask_discrete = [m.mask_discrete for m in model.module.mask_modules]
