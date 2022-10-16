@@ -1,6 +1,7 @@
 from lib2to3.pgen2.grammar import opmap_raw
 import os
 import math
+import datetime
 import argparse
 import torch
 import torch.nn as nn
@@ -24,16 +25,17 @@ parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with
 parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
 parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 300)')
 parser.add_argument('--classes', type=int, default=10, help='class of output')
-parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
-parser.add_argument('--target', type=int, default=7, help='Target Nbit')
+parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
+parser.add_argument('--target', type=int, default=4, help='Target Nbit')
 parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
 parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 0.1)')
 parser.add_argument('--workers', type=int, default=4, help='number of data loading workers (default: 2)')
 parser.add_argument('--decay', type=float, default=5e-4, help='weight decay (default: 5e-4)')
 parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
-parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
-parser.add_argument('--save_dir', type=str, default='train_result/1013/TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
+# parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
+parser.add_argument('--save_file', type=str, default='TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
+parser.add_argument('-a','--arch', default='resnet18', help= 'ResNet for resnet20 on cifar10, ResNet18 for imagenet&TinyImagenet')
 args = parser.parse_args()
 
 def get_logger(filename, verbosity=1, name=None):
@@ -82,19 +84,19 @@ def compute_mask(model):
             print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def tiny_loader(args):
-    data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
+    # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
     normalize = transform.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
     transform_train = transform.Compose(
         [transform.RandomResizedCrop(224), transform.RandomHorizontalFlip(), transform.ToTensor(),
          normalize, ])
     transform_test = transform.Compose([transform.Resize(224), transform.ToTensor(), normalize, ])
-    trainset = torchvision.datasets.ImageFolder(root=os.path.join(data_dir, 'train'), transform=transform_train)
-    testset = torchvision.datasets.ImageFolder(root=os.path.join(data_dir, 'val'), transform=transform_test)
+    trainset = torchvision.datasets.ImageFolder(root=os.path.join(args.data, 'train'), transform=transform_train)
+    testset = torchvision.datasets.ImageFolder(root=os.path.join(args.data, 'val'), transform=transform_test)
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
     return train_loader, test_loader
 
-def data_loader(args):
+def cifar_loader(args):
     #prepare dataset and preprocessing
     transform_train = transform.Compose([
         transform.RandomCrop(32, padding=4),
@@ -112,34 +114,84 @@ def data_loader(args):
     testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=args.workers)
     return trainloader,testloader
 
+def imagenet_loader(args):
+    # Data loading code
+    traindir = os.path.join(args.data,'train')
+    valdir = os.path.join(args.data, 'val')
+    normalize = transform.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_dataset = torchvision.dataset.ImageFolder(
+        traindir,
+        transform.Compose([
+            transform.RandomResizedCrop(224),
+            transform.RandomHorizontalFlip(),
+            transform.ToTensor(),
+            normalize,
+        ]))
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=args.batch_size,
+                                               num_workers=args.workers,
+                                               pin_memory=True,
+                                               )
+
+    val_dataset = torchvision.datasets.ImageFolder(
+        valdir,
+        transform.Compose([
+            transform.Resize(256),
+            transform.CenterCrop(224),
+            transform.ToTensor(),
+            normalize,
+        ]))
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                             batch_size=args.batch_size,
+                                             num_workers=4,
+                                             pin_memory=True,
+                                             )
+    return train_loader, val_loader
+
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if not os.path.exists(args.save_dir):
-            os.makedirs(args.save_dir)
+
+    today=datetime.date.today()
+    formatted_today=today.strftime('%m%d')
+    root =  os.path.join('train_result',formatted_today)
+    save_dir =os.path.join(root,args.save_file)
+    if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
 
     writer = SummaryWriter(args.save_dir)
 
-    train_log_filepath = os.path.join(args.save_dir, args.log_file)
+    train_log_filepath = os.path.join(save_dir, args.log_file)
     logger = get_logger(train_log_filepath)
 
     logger.info("args = %s", args)
 
     #prepare dataset and preprocessing
     if args.classes == 10:
-        trainloader, testloader = data_loader(args)
+        trainloader, testloader = cifar_loader(args)
     elif args.classes == 200:
         trainloader, testloader = tiny_loader(args)
+    elif args.classes == 1000:
+        trainloader, testloader = imagenet_loader(args)
 
     #labels in CIFAR10
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
     #define ResNet20
-    model = ResNet18(
+    print("=> creating model '{}'".format(args.arch))
+    model = __dict__[args.arch](
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
         bin=True
         ).to(device)
+    # model = ResNet18(
+    #     num_classes=args.classes,
+    #     Nbits=args.Nbits,
+    #     act_bit = args.act,
+    #     bin=True
+    #     ).to(device)
 
     #define loss funtion & optimizer
     criterion = nn.CrossEntropyLoss()
@@ -208,7 +260,7 @@ if __name__ == '__main__':
             writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
         # scheduler.step()
         if epoch == args.epochs/2:
-            save_name = os.path.join(*[args.save_dir, 'soft_model_last.pt'])
+            save_name = os.path.join(*[save_dir, 'soft_model_last.pt'])
             torch.save({
                     'model': model.state_dict(),
                     'epoch': epoch,
@@ -255,7 +307,7 @@ if __name__ == '__main__':
                     _test_acc = (100 * _correct / total)
                 logger.info('Solid Test\'s ac is: %.3f%%' % _test_acc )
             ratio_one = get_ratio_one(model)
-            solid_best_model_path = os.path.join(*[args.save_dir, 'solid_model_best.pt'])
+            solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
             torch.save({
                 'model': model.state_dict(),
                 'epoch': epoch,
