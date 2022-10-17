@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with Continuous Sparsification')
 # parser.add_argument('--which-gpu', type=int, default=0, help='which GPU to use')
+parser.add_argument('--data',metavar='DIR',default='/home/datasets/imagenet',help='path to dataset')
 parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
 parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 300)')
 parser.add_argument('--classes', type=int, default=10, help='class of output')
@@ -76,12 +77,13 @@ def adjust_learning_rate(optimizer, epoch, args):
         param_group['lr'] = lr
 
 def compute_mask(model):
+    print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
     for m in model.mask_modules:
         m.mask_discrete = torch.bernoulli(m.mask)
         m.sampled_iter += m.mask_discrete
         m.temp_s = temp_increase**m.sampled_iter
-        if epoch in [args.epochs/2, args.epochs] :
-            print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+        # if epoch in [args.epochs/2, args.epochs] :
+        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def tiny_loader(args):
     # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
@@ -121,7 +123,7 @@ def imagenet_loader(args):
     normalize = transform.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    train_dataset = torchvision.dataset.ImageFolder(
+    train_dataset = torchvision.datasets.ImageFolder(
         traindir,
         transform.Compose([
             transform.RandomResizedCrop(224),
@@ -160,7 +162,7 @@ if __name__ == '__main__':
     if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-    writer = SummaryWriter(args.save_dir)
+    writer = SummaryWriter(save_dir)
 
     train_log_filepath = os.path.join(save_dir, args.log_file)
     logger = get_logger(train_log_filepath)
@@ -180,18 +182,13 @@ if __name__ == '__main__':
 
     #define ResNet20
     print("=> creating model '{}'".format(args.arch))
-    model = __dict__[args.arch](
+    model = eval(args.arch)(
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
         bin=True
         ).to(device)
-    # model = ResNet18(
-    #     num_classes=args.classes,
-    #     Nbits=args.Nbits,
-    #     act_bit = args.act,
-    #     bin=True
-    #     ).to(device)
+
 
     #define loss funtion & optimizer
     criterion = nn.CrossEntropyLoss()
@@ -206,7 +203,18 @@ if __name__ == '__main__':
     lr=[]
     for epoch in range(1, args.epochs+1):
         print('\nEpoch: %d' % epoch)
-        adjust_learning_rate(optimizer, epoch, args)
+        # adjust_learning_rate(optimizer, epoch, args)
+        if args.warmup:
+            if epoch <= 5:
+                step = epoch/5
+                lr = args.lr * step
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
+            else:
+                scheduler.step()
+        else:
+            if epoch > 1:
+                scheduler.step()
 
         model.train()
         sum_loss = 0.0
@@ -258,15 +266,14 @@ if __name__ == '__main__':
             if i % 50 == 0:
                 logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,sum_loss/(i+1),train_acc ))
             writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
-        # scheduler.step()
-        if epoch == args.epochs/2:
-            save_name = os.path.join(*[save_dir, 'soft_model_last.pt'])
-            torch.save({
-                    'model': model.state_dict(),
-                    'epoch': epoch,
-                    'valid_acc': train_acc,
-                    'ratio_one':ratio_one,
-                }, save_name)
+        # if epoch == args.epochs/2:
+        #     save_name = os.path.join(*[save_dir, 'soft_model_last.pt'])
+        #     torch.save({
+        #             'model': model.state_dict(),
+        #             'epoch': epoch,
+        #             'valid_acc': train_acc,
+        #             'ratio_one':ratio_one,
+        #         }, save_name)
 
         # test with soft mask
         with torch.no_grad():
@@ -290,7 +297,7 @@ if __name__ == '__main__':
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
                 m.mask_discrete = torch.bernoulli(m.mask)
-                logger.info(m.mask)
+                # logger.info(m.mask)
                 logger.info(m.mask_discrete)
             # test again after finalizing the soft bitmask to 0&1
             with torch.no_grad():
@@ -327,5 +334,5 @@ if __name__ == '__main__':
     avg_bit = args.Nbits * ratio_one
     logger.info('model size is: %.3f' % TP)
     logger.info('average bit is: %.3f ' % avg_bit)
-    plt.plot(np.arange(len(lr)), lr)
-    plt.savefig('learning rate.jpg')
+    # plt.plot(np.arange(len(lr)), lr)
+    # plt.savefig('learning rate.jpg')
