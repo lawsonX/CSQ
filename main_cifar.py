@@ -203,7 +203,6 @@ if __name__ == '__main__':
     best_acc = 0
     solid_best_acc =0
     temp_increase = 200**(1./(args.epochs/2))
-    lr=[]
     for epoch in range(1, args.epochs+1):
         print('\nEpoch: %d' % epoch)
         # adjust_learning_rate(optimizer, epoch, args)
@@ -239,7 +238,6 @@ if __name__ == '__main__':
 
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
-            lr.append(scheduler.get_lr()[0])
             
             outputs = model(inputs)
 
