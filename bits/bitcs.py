@@ -212,15 +212,15 @@ class BitLinear(Module):
             dev = self.pweight.device
             dev_m = self.mask_weight.device
             self.temp_s = self.temp_s.to(dev_m)
-            mask_discrete = self.mask_discrete.to(dev_m)
-            mask_discrete=self.mask_discrete.to(dev_m)
+            self.sampled_iter = self.sampled_iter.to(dev_m)
+            self.mask_discrete=self.mask_discrete.to(dev_m)
 
             self.mask = torch.sigmoid(self.temp_s * self.mask_weight)
             # mask = self.mask.to(dev_m)
             pweight = torch.sigmoid(temp * self.pweight)
             nweight = torch.sigmoid(temp * self.nweight)
             weight = torch.mul(pweight-nweight, self.exps)
-            masked_weight = weight * self.mask * mask_discrete
+            masked_weight = weight * self.mask * self.mask_discrete
             weight =  torch.sum(masked_weight,dim=2) * self.scale
 
             if self.pbias is not None:
@@ -427,15 +427,15 @@ class BitConv2d(Bit_ConvNd):
             dev = self.pweight.device
             dev_m = self.mask_weight.device
             self.temp_s = self.temp_s.to(dev_m)
-            mask_discrete = self.mask_discrete.to(dev_m)
-            mask_discrete=self.mask_discrete.to(dev_m)
+            self.sampled_iter = self.sampled_iter.to(dev_m)
+            self.mask_discrete=self.mask_discrete.to(dev_m)
 
             self.mask = torch.sigmoid(self.temp_s * self.mask_weight)
             # mask = self.mask.to(dev_m)
             pweight = torch.sigmoid(temp * self.pweight) # continuous conversion
             nweight = torch.sigmoid(temp * self.nweight)
             weight = torch.mul(pweight-nweight, self.exps)
-            masked_weight = weight * self.mask * mask_discrete
+            masked_weight = weight * self.mask * self.mask_discrete
             weight =  torch.sum(masked_weight,dim=4) * self.scale
 
             if self.pbias is not None:
