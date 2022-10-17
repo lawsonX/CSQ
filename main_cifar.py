@@ -15,6 +15,7 @@ import numpy as np
 import random
 from cifar10.network.resnetcs20 import ResNet
 from imagenet.networks.resnetcs18 import ResNet18
+from imagenet.networks.vgg import VGG19bn
 from torch.utils.tensorboard import SummaryWriter
 import logging
 import matplotlib.pyplot as plt
