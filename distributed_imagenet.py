@@ -235,6 +235,7 @@ def main_worker(local_rank, nprocs, args):
             for m in model.module.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
+                logger.info(m.mask_discrete)
             solid_acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
             logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
             ratio_one = get_ratio_one(model)
@@ -252,9 +253,7 @@ def main_worker(local_rank, nprocs, args):
 
         if epoch <= args.epochs*0.875:
             compute_mask(model, epoch, temp_increase, args)
-        for m in model.module.mask_modules:
-            # logger.info(m.mask)
-            logger.info(m.mask_discrete)
+            
     avg_bit = args.Nbits * ratio_one
     logger.info('average bit is: %.3f ' % avg_bit)
 
