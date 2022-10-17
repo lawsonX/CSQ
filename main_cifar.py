@@ -37,6 +37,8 @@ parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 ma
 parser.add_argument('--save_file', type=str, default='TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 parser.add_argument('-a','--arch', default='resnet18', help= 'ResNet for resnet20 on cifar10, ResNet18 for imagenet&TinyImagenet')
+parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
+
 args = parser.parse_args()
 
 def get_logger(filename, verbosity=1, name=None):
