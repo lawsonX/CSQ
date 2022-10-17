@@ -138,12 +138,11 @@ class ResStage(nn.Module):
             
         self.block1 = BasicBlock(in_planes, out_planes, stride=stride, downsample=downsample, Nbits=Nbits, act_bit=act_bit, bin=bin)
         self.block2 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin)
-        self.block3 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin)
-
+     
     def forward(self, x, temp):
         out = self.block1(x, temp)
         out = self.block2(out, temp)
-        out = self.block3(out, temp)
+
         return out
 
 class ResNet18(MaskedNet):
