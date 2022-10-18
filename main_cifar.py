@@ -80,14 +80,15 @@ def adjust_learning_rate(optimizer, epoch, args):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def compute_mask(model):
-    print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+def compute_mask(model,epoch, temp_increase, args):
     for m in model.mask_modules:
         m.mask_discrete = torch.bernoulli(m.mask)
         m.sampled_iter += m.mask_discrete
         m.temp_s = temp_increase**m.sampled_iter
-        # if epoch in [args.epochs/2, args.epochs] :
-        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+        if epoch == args.epochs/2:
+            m.sampled_iter = torch.ones(args.Nbits).cuda()
+            m.temp_s = torch.ones(args.Nbits).cuda()
+        print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def tiny_loader(args):
     # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
@@ -330,7 +331,7 @@ if __name__ == '__main__':
 
         # update temp_s based on sampled_iter per epoch
         if epoch <= args.epochs*0.875:
-            compute_mask(model)
+            compute_mask(model,epoch, temp_increase, args)
         
     TP = model.total_param()
     avg_bit = args.Nbits * ratio_one
