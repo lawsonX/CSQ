@@ -450,7 +450,7 @@ def accuracy(output, target, topk=(1, )):
 
 def compute_mask(model,epoch, temp_increase, args):
     for m in model.module.mask_modules:
-        print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+#         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
         m.mask_discrete = torch.bernoulli(m.mask)
         m.sampled_iter += m.mask_discrete
         m.temp_s = temp_increase**m.sampled_iter
