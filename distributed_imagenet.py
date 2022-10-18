@@ -252,7 +252,7 @@ def main_worker(local_rank, nprocs, args):
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
-        if epoch <= args.epochs*0.875:
+        if epoch <= args.epochs*0.95:
             compute_mask(model, epoch, temp_increase, args)
             
     avg_bit = args.Nbits * ratio_one
