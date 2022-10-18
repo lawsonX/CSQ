@@ -330,7 +330,7 @@ if __name__ == '__main__':
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
         # update temp_s based on sampled_iter per epoch
-        if epoch <= args.epochs*0.875:
+        if epoch <= args.epochs*0.95:
             compute_mask(model,epoch, temp_increase, args)
         
     TP = model.total_param()
