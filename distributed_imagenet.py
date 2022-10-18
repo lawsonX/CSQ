@@ -21,6 +21,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 from imagenet.networks.resnetcs18 import ResNet18
+from imagenet.networks.resnetcs50 import ResNet50
 from imagenet.networks.vgg import VGG19bn
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
