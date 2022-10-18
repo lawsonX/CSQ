@@ -450,13 +450,14 @@ def accuracy(output, target, topk=(1, )):
         return res
 
 def compute_mask(model,epoch, temp_increase, args):
-    for m in model.module.mask_modules:
-#         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+    for m in model.mask_modules:
         m.mask_discrete = torch.bernoulli(m.mask)
         m.sampled_iter += m.mask_discrete
         m.temp_s = temp_increase**m.sampled_iter
-        # if epoch in [args.epochs/2, args.epochs] :
-        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+        if epoch == args.epochs/2:
+            m.sampled_iter = torch.ones(args.Nbits)
+            m.temp_s = torch.ones(args.Nbits)
+        print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def get_ratio_one(model):
     mask_discrete = [m.mask_discrete for m in model.module.mask_modules]
