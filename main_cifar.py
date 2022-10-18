@@ -89,6 +89,8 @@ def compute_mask(model,epoch, temp_increase, args):
             m.sampled_iter = torch.ones(args.Nbits).cuda()
             m.temp_s = torch.ones(args.Nbits).cuda()
         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+        # if epoch in [args.epochs/2, args.epochs] :
+        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def tiny_loader(args):
     # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
@@ -204,7 +206,7 @@ if __name__ == '__main__':
     logger.info('start training!')
     best_acc = 0
     solid_best_acc =0
-    temp_increase = 200**(1./(args.epochs/2))
+    temp_increase = 200**(1./(args.epochs*0.4))
     for epoch in range(1, args.epochs+1):
         print('\nEpoch: %d' % epoch)
         # adjust_learning_rate(optimizer, epoch, args)
