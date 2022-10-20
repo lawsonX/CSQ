@@ -199,7 +199,7 @@ def main_worker(local_rank, nprocs, args):
         validate(val_loader, model, criterion, local_rank, args, logger)
         return
     
-    temp_increase = 200**(1./(args.epochs/2))
+    temp_increase = 200**(1./(args.epochs*0.6))
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -454,9 +454,9 @@ def compute_mask(model,epoch, temp_increase, args):
         m.mask_discrete = torch.bernoulli(m.mask)
         m.sampled_iter += m.mask_discrete
         m.temp_s = temp_increase**m.sampled_iter
-        if epoch == args.epochs/2:
-            m.sampled_iter = torch.ones(args.Nbits)
-            m.temp_s = torch.ones(args.Nbits)
+#         if epoch == args.epochs/2:
+#             m.sampled_iter = torch.ones(args.Nbits)
+#             m.temp_s = torch.ones(args.Nbits)
         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def get_ratio_one(model):
