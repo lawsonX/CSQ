@@ -226,8 +226,8 @@ def main_worker(local_rank, nprocs, args):
         train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
         # evaluate on validation set
         acc1,Test_losses = validate(val_loader, model, criterion, local_rank, args, logger,writer)
-        logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
-        writer.add_scalar('Soft Test Acc', acc1, epoch)
+#         logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
+#         writer.add_scalar('Soft Test Acc', acc1, epoch)
 
         # validate again based on solid bit mask
         if epoch > 420:
