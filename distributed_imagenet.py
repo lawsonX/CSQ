@@ -32,8 +32,8 @@ parser.add_argument('--data',
 parser.add_argument('-a',
                     '--arch',
                     metavar='ARCH',
-                    default='resnet18',
-                    help='default: resnet18')
+                    default='ResNet18',
+                    help='default: ResNet18')
 parser.add_argument('-j',
                     '--workers',
                     default=8,
@@ -97,7 +97,7 @@ parser.add_argument('--pretrained',
                     action='store_true',
                     help='use pre-trained model')
 parser.add_argument('--seed',
-                    default=None,
+                    default=3407,
                     type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--classes', type=int, default=200, help='class of output')
@@ -125,11 +125,11 @@ def main():
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         cudnn.deterministic = True
-        warnings.warn('You have chosen to seed training. '
-                      'This will turn on the CUDNN deterministic setting, '
-                      'which can slow down your training considerably! '
-                      'You may see unexpected behavior when restarting '
-                      'from checkpoints.')
+        # warnings.warn('You have chosen to seed training. '
+        #               'This will turn on the CUDNN deterministic setting, '
+        #               'which can slow down your training considerably! '
+        #               'You may see unexpected behavior when restarting '
+        #               'from checkpoints.')
 
     main_worker(args.local_rank, args.nprocs, args)
 
@@ -146,7 +146,6 @@ def main_worker(local_rank, nprocs, args):
 
     train_log_filepath = os.path.join(save_dir, args.log_file)
     logger = get_logger(train_log_filepath)
-
     logger.info("args = %s", args)
 
     dist.init_process_group(backend='nccl')
@@ -157,10 +156,6 @@ def main_worker(local_rank, nprocs, args):
     # else:
         # print("=> creating model '{}'".format(args.arch))
         # model = models.__dict__[args.arch]()
-    train_log_filepath = os.path.join(save_dir, args.log_file)
-    logger = get_logger(train_log_filepath)
-    logger.info("args = %s", args)
-
     model = eval(args.arch)(
         num_classes=args.classes,
         Nbits=args.Nbits,
@@ -199,7 +194,7 @@ def main_worker(local_rank, nprocs, args):
         validate(val_loader, model, criterion, local_rank, args, logger)
         return
     
-    temp_increase = 200**(1./(args.epochs*0.6))
+    temp_increase = 200**(1./(200))
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -218,26 +213,29 @@ def main_worker(local_rank, nprocs, args):
                 scheduler.step()
         
         # update global temp
-        if epoch <= args.epochs/2:
+        if epoch <= 200:
             model.temp = temp_increase**epoch
         else:
-            _epoch = epoch - (args.epochs/2)
+            _epoch = epoch - 200
             model.temp = temp_increase**_epoch
+        logger.info('Current global temp:%.3f'% round(model.temp,3))
 
         # train for one epoch
         ratio_one = get_ratio_one(model)
         logger.info('Current R_O:%.3f'% round(ratio_one,3))
-        train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger)  
+        train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
+        acc1,Test_losses = validate(val_loader, model, criterion, local_rank, args, logger,writer)
+        logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
+        writer.add_scalar('Soft Test Acc', acc1, epoch)
 
         # validate again based on solid bit mask
-        if epoch > args.epochs*0.975:
+        if epoch > 420:
             for m in model.module.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
                 logger.info(m.mask_discrete)
-            solid_acc1 = validate(val_loader, model, criterion, local_rank, args, logger)
+            solid_acc1, test_loss = validate(val_loader, model, criterion, local_rank, args, logger)
             logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
             ratio_one = get_ratio_one(model)
             solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
@@ -252,15 +250,12 @@ def main_worker(local_rank, nprocs, args):
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
-        if epoch <= args.epochs*0.95:
-            compute_mask(model, epoch, temp_increase, args)
-            
-    avg_bit = args.Nbits * ratio_one
-    logger.info('average bit is: %.3f ' % avg_bit)
+        # if epoch <= args.epochs*0.95:
+        #     compute_mask(model, epoch, temp_increase, args)
 
 
 
-def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger):
+def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -272,14 +267,6 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
 
     # switch to train mode
     model.train()
-
-    # update global tempreture
-    temp_increase = 200**(1./(args.epochs/2))
-    if epoch <= args.epochs/2:
-            model.temp = temp_increase**epoch
-    
-    logger.info('Current global temp:%.3f'% round(model.temp,3))
-
     end = time.time()
     for i, (images, target) in enumerate(train_loader):
         # measure data loading time
@@ -325,11 +312,13 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-
+        lrr = optimizer.state_dict()['param_groups'][0]['lr']
         if i % args.print_freq == 0:
+        #     logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,losses.avg,top1.avg))
+        # writer.add_scalar('train loss', losses, epoch)
             progress.display(i)
 
-def validate(val_loader, model, criterion, local_rank, args,logger):
+def validate(val_loader, model, criterion, local_rank, args,logger,writer):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -376,7 +365,7 @@ def validate(val_loader, model, criterion, local_rank, args,logger):
         logger.info(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
                                                                     top5=top5))
 
-    return top1.avg
+    return top1, losses
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -449,23 +438,23 @@ def accuracy(output, target, topk=(1, )):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
-def compute_mask(model,epoch, temp_increase, args):
-    for m in model.mask_modules:
-        m.mask_discrete = torch.bernoulli(m.mask)
-        m.sampled_iter += m.mask_discrete
-        m.temp_s = temp_increase**m.sampled_iter
-#         if epoch == args.epochs/2:
-#             m.sampled_iter = torch.ones(args.Nbits)
-#             m.temp_s = torch.ones(args.Nbits)
-        print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+# def compute_mask(model,epoch, temp_increase, args):
+#     for m in model.module.mask_modules:
+#         m.mask_discrete = torch.bernoulli(m.mask)
+#         m.sampled_iter += m.mask_discrete
+#         m.temp_s = temp_increase**m.sampled_iter
+#         # if epoch == args.epochs/2:
+#         #     m.sampled_iter = torch.ones(args.Nbits)
+#         #     m.temp_s = torch.ones(args.Nbits)
+#         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def get_ratio_one(model):
-    mask_discrete = [m.mask_discrete for m in model.module.mask_modules]
+    mask = [m.mask for m in model.module.mask_modules]
     total_ele = 0
     ones = 0
-    for iter in range(len(mask_discrete)):
-        t = mask_discrete[iter].numel()
-        o = (mask_discrete[iter] == 1).sum().item()
+    for iter in range(len(mask)):
+        t = mask[iter].numel()
+        o = (mask[iter] >= 0.5).sum().item()
         # z = (mask_discrete[iter] == 0).sum().item()
         total_ele += t
         ones += o
