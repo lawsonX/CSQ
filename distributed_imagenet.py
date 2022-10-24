@@ -41,7 +41,7 @@ parser.add_argument('-j',
                     metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs',
-                    default=90,
+                    default=440,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run')
@@ -83,7 +83,7 @@ parser.add_argument('--wd',
                     dest='weight_decay')
 parser.add_argument('-p',
                     '--print-freq',
-                    default=200,
+                    default=100,
                     type=int,
                     metavar='N',
                     help='print frequency (default: 10)')
@@ -105,8 +105,10 @@ parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 ma
 parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
 parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
 parser.add_argument('--target', type=int, default=3, help='Target Nbit')
-parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
+parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
 
+parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
+parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
 parser.add_argument('--save_file', type=str, default='TIM_CSQvgg19bn_T6N3A0_lr005', help='path for saving trained models')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
@@ -194,7 +196,7 @@ def main_worker(local_rank, nprocs, args):
         validate(val_loader, model, criterion, local_rank, args, logger)
         return
     
-    temp_increase = 200**(1./(200))
+    temp_increase = 200**(1./(args.rewind))
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -213,10 +215,10 @@ def main_worker(local_rank, nprocs, args):
                 scheduler.step()
         
         # update global temp
-        if epoch <= 200:
+        if epoch <= args.rewind:
             model.temp = temp_increase**epoch
         else:
-            _epoch = epoch - 200
+            _epoch = epoch - args.rewind
             model.temp = temp_increase**_epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
 
@@ -226,11 +228,11 @@ def main_worker(local_rank, nprocs, args):
         train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
         # evaluate on validation set
         acc1,Test_losses = validate(val_loader, model, criterion, local_rank, args, logger,writer)
-#         logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
-#         writer.add_scalar('Soft Test Acc', acc1, epoch)
+        # logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
+        # writer.add_scalar('Soft Test Acc', acc1, epoch)
 
         # validate again based on solid bit mask
-        if epoch > 420:
+        if epoch > args.solidize:
             for m in model.module.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
