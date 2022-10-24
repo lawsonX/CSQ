@@ -26,7 +26,9 @@ parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with
 # parser.add_argument('--which-gpu', type=int, default=0, help='which GPU to use')
 parser.add_argument('--data',metavar='DIR',default='/home/datasets/imagenet',help='path to dataset')
 parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
-parser.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 300)')
+parser.add_argument('--epochs', type=int, default=440, help='number of epochs to train (default: 300)')
+parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
+parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
 parser.add_argument('--classes', type=int, default=10, help='class of output')
 parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
 parser.add_argument('--target', type=int, default=4, help='Target Nbit')
@@ -38,7 +40,7 @@ parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 ma
 parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
 parser.add_argument('--save_file', type=str, default='TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
-parser.add_argument('-a','--arch', default='resnet18', help= 'ResNet for resnet20 on cifar10, ResNet18 for imagenet&TinyImagenet')
+parser.add_argument('-a','--arch', default='ResNet', help= 'ResNet for resnet20 on cifar10, ResNet18,VGG19bn for imagenet&TinyImagenet')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
 
 args = parser.parse_args()
@@ -153,7 +155,7 @@ def imagenet_loader(args):
         ]))
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                              batch_size=args.batch_size,
-                                             num_workers=4,
+                                             num_workers=args.workers,
                                              pin_memory=True,
                                              )
     return train_loader, val_loader
@@ -164,11 +166,6 @@ if __name__ == '__main__':
     random.seed(3407)
     torch.manual_seed(3407)
     cudnn.deterministic = True
-        # warnings.warn('You have chosen to seed training. '
-        #               'This will turn on the CUDNN deterministic setting, '
-        #               'which can slow down your training considerably! '
-        #               'You may see unexpected behavior when restarting '
-        #               'from checkpoints.')
 
     today=datetime.date.today()
     formatted_today=today.strftime('%m%d')
@@ -208,12 +205,12 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.decay)
     # optimizer = optim.Adam(model.parameters(),lr = args.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0.001, last_epoch=- 1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
     
     logger.info('start training!')
     best_acc = 0
     solid_best_acc =0
-    temp_increase = args.final_temp**(1./(200))
+    temp_increase = args.final_temp**(1./(args.rewind))
     for epoch in range(1, args.epochs):
         print('\nEpoch: %d' % epoch)
         # adjust_learning_rate(optimizer, epoch, args)
@@ -237,10 +234,10 @@ if __name__ == '__main__':
         total = 0.0
         
         # update global temp
-        if epoch <= 200:
+        if epoch <= args.rewind:
             model.temp = temp_increase**epoch
         else:
-            _epoch = epoch - 200 # rewind to 1
+            _epoch = epoch - args.rewind # rewind tempreture to 1
             model.temp = temp_increase**_epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
 
@@ -274,17 +271,9 @@ if __name__ == '__main__':
             total += labels.size(0)
             correct += predicted.eq(labels.data).cpu().sum()
             train_acc = 100. * correct / total
-            if i % 50 == 0:
+            if i % 100 == 0:
                 logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,sum_loss/(i+1),train_acc ))
             writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
-        # if epoch == args.epochs/2:
-        #     save_name = os.path.join(*[save_dir, 'soft_model_last.pt'])
-        #     torch.save({
-        #             'model': model.state_dict(),
-        #             'epoch': epoch,
-        #             'valid_acc': train_acc,
-        #             'ratio_one':ratio_one,
-        #         }, save_name)
 
         # test with soft mask
         with torch.no_grad():
@@ -302,7 +291,7 @@ if __name__ == '__main__':
             logger.info('Test\'s ac is: %.3f%%' % test_acc )
             writer.add_scalar('Soft Test Acc', test_acc, epoch)
         
-        if epoch >= 420:
+        if epoch >= args.solidize:
             # Turn soft mask to discrete
             for m in model.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
