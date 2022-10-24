@@ -1,142 +1,172 @@
-import argparse
+from lib2to3.pgen2.grammar import opmap_raw
 import os
-import random
-import shutil
-import time
+import math
 import datetime
-import warnings
-
+import argparse
 import torch
 import torch.nn as nn
-import torch.nn.parallel
+from torch.nn import Parameter
+import torchvision
+import torchvision.transforms as transform
+import torch.nn.functional as F
+import torch.optim as optim
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.optim
-import logging
-from torch.utils.tensorboard import SummaryWriter
-import torch.multiprocessing as mp
-import torch.utils.data
-import torch.utils.data.distributed
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-import torchvision.models as models
+import numpy as np
+import random
+from cifar10.network.resnetcs20 import ResNet
 from imagenet.networks.resnetcs18 import ResNet18
 from imagenet.networks.resnetcs50 import ResNet50
 from imagenet.networks.vgg import VGG19bn
+from torch.utils.tensorboard import SummaryWriter
+import logging
+import matplotlib.pyplot as plt
 
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data',
-                    metavar='DIR',
-                    default='/home/xiaolirui/workspace/datasets/tiny-imagenet-200',
-                    help='path to dataset')
-parser.add_argument('-a',
-                    '--arch',
-                    metavar='ARCH',
-                    default='ResNet18',
-                    help='default: ResNet18')
-parser.add_argument('-j',
-                    '--workers',
-                    default=8,
-                    type=int,
-                    metavar='N',
-                    help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs',
-                    default=440,
-                    type=int,
-                    metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch',
-                    default=0,
-                    type=int,
-                    metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('-b',
-                    '--batch-size',
-                    default=1024,
-                    type=int,
-                    metavar='N',
-                    help='mini-batch size (default: 3200), this is the total '
-                    'batch size of all GPUs on the current node when '
-                    'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr',
-                    '--learning-rate',
-                    default=0.05,
-                    type=float,
-                    metavar='LR',
-                    help='initial learning rate',
-                    dest='lr')
-parser.add_argument('--momentum',
-                    default=0.9,
-                    type=float,
-                    metavar='M',
-                    help='momentum')
-parser.add_argument('--local_rank',
-                    default=-1,
-                    type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--wd',
-                    '--weight-decay',
-                    default=1e-4,
-                    type=float,
-                    metavar='W',
-                    help='weight decay (default: 1e-4)',
-                    dest='weight_decay')
-parser.add_argument('-p',
-                    '--print-freq',
-                    default=100,
-                    type=int,
-                    metavar='N',
-                    help='print frequency (default: 10)')
-parser.add_argument('-e',
-                    '--evaluate',
-                    dest='evaluate',
-                    action='store_true',
-                    help='evaluate model on validation set')
-parser.add_argument('--pretrained',
-                    dest='pretrained',
-                    action='store_true',
-                    help='use pre-trained model')
-parser.add_argument('--seed',
-                    default=3407,
-                    type=int,
-                    help='seed for initializing training. ')
-parser.add_argument('--classes', type=int, default=200, help='class of output')
-parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
-parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
-parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
-parser.add_argument('--target', type=int, default=3, help='Target Nbit')
-parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
-
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with Continuous Sparsification')
+# parser.add_argument('--which-gpu', type=int, default=0, help='which GPU to use')
+parser.add_argument('--data',metavar='DIR',default='/home/datasets/imagenet',help='path to dataset')
+parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
+parser.add_argument('--epochs', type=int, default=440, help='number of epochs to train (default: 300)')
 parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
 parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
-parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
-parser.add_argument('--save_file', type=str, default='TIM_CSQvgg19bn_T6N3A0_lr005', help='path for saving trained models')
+parser.add_argument('--classes', type=int, default=10, help='class of output')
+parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
+parser.add_argument('--target', type=int, default=4, help='Target Nbit')
+parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
+parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 0.1)')
+parser.add_argument('--workers', type=int, default=4, help='number of data loading workers (default: 2)')
+parser.add_argument('--decay', type=float, default=5e-4, help='weight decay (default: 5e-4)')
+parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
+parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
+parser.add_argument('--save_file', type=str, default='TIM_res18_A0N8T7_Steplr00001_96_e200', help='save path of weight and log files')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
+parser.add_argument('-a','--arch', default='ResNet', help= 'ResNet for resnet20 on cifar10, ResNet18,VGG19bn for imagenet&TinyImagenet')
+parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
 
-def reduce_mean(tensor, nprocs):
-    rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    rt /= nprocs
-    return rt
+args = parser.parse_args()
 
-def main():
-    args = parser.parse_args()
-    args.nprocs = torch.cuda.device_count()
+def get_logger(filename, verbosity=1, name=None):
+    level_dict = {0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING}
+    formatter = logging.Formatter(
+        "[%(asctime)s][%(filename)s][line:%(lineno)d][%(levelname)s] %(message)s"
+    )
+    logger = logging.getLogger(name)
+    logger.setLevel(level_dict[verbosity])
+ 
+    fh = logging.FileHandler(filename, "w")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh) 
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+ 
+    return logger
 
-    if args.seed is not None:
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        cudnn.deterministic = True
-        # warnings.warn('You have chosen to seed training. '
-        #               'This will turn on the CUDNN deterministic setting, '
-        #               'which can slow down your training considerably! '
-        #               'You may see unexpected behavior when restarting '
-        #               'from checkpoints.')
+def get_ratio_one(model):
+    mask = [m.mask for m in model.mask_modules]
+    total_ele = 0
+    ones = 0
+    for iter in range(len(mask)):
+        t = mask[iter].numel()
+        o = (mask[iter] >= 0.5).sum().item()
+        # z = (mask_discrete[iter] == 0).sum().item()
+        total_ele += t
+        ones += o
+    ratio_one = ones/total_ele
+    return ratio_one
 
-    main_worker(args.local_rank, args.nprocs, args)
+def adjust_learning_rate(optimizer, epoch, args):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = args.lr * (0.1 ** (epoch // 50))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
+# def compute_mask(model,epoch, temp_increase, args):
+#     for m in model.mask_modules:
+#         # m.mask_discrete = torch.bernoulli(m.mask)
+#         # m.sampled_iter += m.mask_discrete
+#         m.temp_s = temp_increase**epoch
+#         if epoch == 201:
+#             # m.sampled_iter = torch.ones(args.Nbits).cuda()
+#             m.temp_s = torch.ones(args.Nbits).cuda() # rewind
+        # print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
+        # if epoch in [args.epochs/2, args.epochs] :
+        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
-def main_worker(local_rank, nprocs, args):
+def tiny_loader(args):
+    # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
+    normalize = transform.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
+    transform_train = transform.Compose(
+        [transform.RandomResizedCrop(224), transform.RandomHorizontalFlip(), transform.ToTensor(),
+         normalize, ])
+    transform_test = transform.Compose([transform.Resize(224), transform.ToTensor(), normalize, ])
+    trainset = torchvision.datasets.ImageFolder(root=os.path.join(args.data, 'train'), transform=transform_train)
+    testset = torchvision.datasets.ImageFolder(root=os.path.join(args.data, 'val'), transform=transform_test)
+    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
+    test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
+    return train_loader, test_loader
+
+def cifar_loader(args):
+    #prepare dataset and preprocessing
+    transform_train = transform.Compose([
+        transform.RandomCrop(32, padding=4),
+        transform.RandomHorizontalFlip(),
+        transform.ToTensor(),
+        transform.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+    transform_test = transform.Compose([
+        transform.ToTensor(),
+        transform.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+    trainset = torchvision.datasets.CIFAR10(root='../data', train=True, download=True, transform=transform_train)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+    testset = torchvision.datasets.CIFAR10(root='../data', train=False, download=True, transform=transform_test)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=args.workers)
+    return trainloader,testloader
+
+def imagenet_loader(args):
+    # Data loading code
+    traindir = os.path.join(args.data,'train')
+    valdir = os.path.join(args.data, 'val')
+    normalize = transform.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_dataset = torchvision.datasets.ImageFolder(
+        traindir,
+        transform.Compose([
+            transform.RandomResizedCrop(224),
+            transform.RandomHorizontalFlip(),
+            transform.ToTensor(),
+            normalize,
+        ]))
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                               batch_size=args.batch_size,
+                                               num_workers=args.workers,
+                                               pin_memory=True,
+                                               )
+
+    val_dataset = torchvision.datasets.ImageFolder(
+        valdir,
+        transform.Compose([
+            transform.Resize(256),
+            transform.CenterCrop(224),
+            transform.ToTensor(),
+            normalize,
+        ]))
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                             batch_size=args.batch_size,
+                                             num_workers=args.workers,
+                                             pin_memory=True,
+                                             )
+    return train_loader, val_loader
+
+if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if args.seed is not None:
+    random.seed(3407)
+    torch.manual_seed(3407)
+    cudnn.deterministic = True
+
     today=datetime.date.today()
     formatted_today=today.strftime('%m%d')
     root =  os.path.join('train_result',formatted_today)
@@ -150,57 +180,39 @@ def main_worker(local_rank, nprocs, args):
     logger = get_logger(train_log_filepath)
     logger.info("args = %s", args)
 
-    dist.init_process_group(backend='nccl')
-    # create model
-    # if args.pretrained:
-    #     print("=> using pre-trained model '{}'".format(args.arch))
-    #     model = models.__dict__[args.arch](pretrained=True)
-    # else:
-        # print("=> creating model '{}'".format(args.arch))
-        # model = models.__dict__[args.arch]()
+    #prepare dataset and preprocessing
+    if args.classes == 10:
+        trainloader, testloader = cifar_loader(args)
+    elif args.classes == 200:
+        trainloader, testloader = tiny_loader(args)
+    elif args.classes == 1000:
+        trainloader, testloader = imagenet_loader(args)
+
+    #labels in CIFAR10
+    classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+    #define ResNet20
+    print("=> creating model '{}'".format(args.arch))
     model = eval(args.arch)(
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
         bin=True
-        )
+        ).to(device)
 
-    torch.cuda.set_device(local_rank)
-    model.cuda(local_rank)
-    # When using a single GPU per process and per
-    # DistributedDataParallel, we need to divide the batch size
-    # ourselves based on the total number of GPUs we have
-    args.batch_size = int(args.batch_size / nprocs)
-    model = torch.nn.parallel.DistributedDataParallel(model,
-                                                      device_ids=[local_rank],
-                                                      find_unused_parameters=True,
-                                                      )
 
-    # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda(local_rank)
-
-    optimizer = torch.optim.SGD(model.parameters(),
-                                args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
-
-    cudnn.benchmark = True
-
-    if args.classes == 1000:
-        train_sampler, val_sampler, train_loader, val_loader = imagenet_loader(args)
-    elif args.classes == 200:
-        train_sampler, val_sampler, train_loader, val_loader = tiny_loader(args)
-
-    if args.evaluate:
-        validate(val_loader, model, criterion, local_rank, args, logger)
-        return
+    #define loss funtion & optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.decay)
+    # optimizer = optim.Adam(model.parameters(),lr = args.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
     
-    temp_increase = 200**(1./(args.rewind))
-    for epoch in range(args.start_epoch, args.epochs):
-        train_sampler.set_epoch(epoch)
-        val_sampler.set_epoch(epoch)
-
+    logger.info('start training!')
+    best_acc = 0
+    solid_best_acc =0
+    temp_increase = args.final_temp**(1./(args.rewind))
+    for epoch in range(1, args.epochs):
+        print('\nEpoch: %d' % epoch)
         # adjust_learning_rate(optimizer, epoch, args)
         if args.warmup:
             if epoch <= 5:
@@ -210,335 +222,117 @@ def main_worker(local_rank, nprocs, args):
                     param_group['lr'] = lr
             else:
                 scheduler.step()
+                # adjust_learning_rate(optimizer, epoch, args)
         else:
-            if epoch > args.start_epoch:
+            if epoch > 1:
                 scheduler.step()
+                # adjust_learning_rate(optimizer, epoch, args)
+
+        model.train()
+        sum_loss = 0.0
+        correct = 0.0
+        total = 0.0
         
         # update global temp
         if epoch <= args.rewind:
             model.temp = temp_increase**epoch
         else:
-            _epoch = epoch - args.rewind
+            _epoch = epoch - args.rewind # rewind tempreture to 1
             model.temp = temp_increase**_epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
 
-        # train for one epoch
-        ratio_one = get_ratio_one(model)
-        logger.info('Current R_O:%.3f'% round(ratio_one,3))
-        train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
-        # evaluate on validation set
-        acc1,Test_losses = validate(val_loader, model, criterion, local_rank, args, logger,writer)
-        # logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
-        # writer.add_scalar('Soft Test Acc', acc1, epoch)
+        for i, data in enumerate(trainloader, 0):
+            length = len(trainloader)
+            inputs, labels = data
 
-        # validate again based on solid bit mask
-        if epoch > args.solidize:
-            for m in model.module.mask_modules:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            
+            outputs = model(inputs)
+
+            # get sparsity of network at current epoch
+
+            # Budget-aware adjusting lmbda according to Eq(4)
+            ratio_one = get_ratio_one(model)
+            TS = args.target / args.Nbits  # target ratio of ones of masks in the network
+            regularization_loss = 0
+            for m in model.mask_modules:
+                regularization_loss += torch.sum(torch.abs(m.mask).sum())
+            classify_loss = criterion(outputs, labels)
+            loss = classify_loss + (args.lmbda*(ratio_one-TS)) * regularization_loss          
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            #print ac & loss in each batch
+            lrr = optimizer.state_dict()['param_groups'][0]['lr']
+            sum_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += predicted.eq(labels.data).cpu().sum()
+            train_acc = 100. * correct / total
+            if i % 100 == 0:
+                logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,sum_loss/(i+1),train_acc ))
+            writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
+
+        # test with soft mask
+        with torch.no_grad():
+            correct = 0
+            total = 0
+            for data in testloader:
+                model.eval()
+                images, labels = data
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum()
+                test_acc = (100 * correct / total)
+            logger.info('Test\'s ac is: %.3f%%' % test_acc )
+            writer.add_scalar('Soft Test Acc', test_acc, epoch)
+        
+        if epoch >= args.solidize:
+            # Turn soft mask to discrete
+            for m in model.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
-                logger.info(m.mask_discrete)
-            solid_acc1, test_loss = validate(val_loader, model, criterion, local_rank, args, logger)
-            logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
+                # m.mask_discrete = torch.bernoulli(m.mask)
+                # logger.info(m.mask)
+                logger.info(m.mask)
+            # test again after finalizing the soft bitmask to 0&1
+            with torch.no_grad():
+                _correct = 0
+                _total = 0
+                for data in testloader:
+                    model.eval()
+                    images, labels = data
+                    images, labels = images.to(device), labels.to(device)
+                    outputs = model(images)
+                    _, _predicted = torch.max(outputs.data, 1)
+                    _total += labels.size(0)
+                    _correct += (_predicted == labels).sum()
+                    _test_acc = (100 * _correct / total)
+                logger.info('Solid Test\'s ac is: %.3f%%' % _test_acc )
             ratio_one = get_ratio_one(model)
             solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
             torch.save({
                 'model': model.state_dict(),
                 'epoch': epoch,
-                'valid_acc': solid_acc1,
+                'valid_acc': _test_acc,
                 'solid_ratio_one': ratio_one,
             }, solid_best_model_path)
-            solid_best_acc = solid_acc1
+            solid_best_acc = _test_acc
             _best_epoch = epoch+1
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
-        # if epoch <= args.epochs*0.95:
-        #     compute_mask(model, epoch, temp_increase, args)
-
-
-
-def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer):
-    batch_time = AverageMeter('Time', ':6.3f')
-    data_time = AverageMeter('Data', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(len(train_loader),
-                             [batch_time, data_time, losses, top1, top5],
-                             prefix="Epoch: [{}]".format(epoch))
-
-    # switch to train mode
-    model.train()
-    end = time.time()
-    for i, (images, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
-
-        images = images.cuda(local_rank, non_blocking=True)
-        target = target.cuda(local_rank, non_blocking=True)
-
-        # compute output
-        output = model(images)
+        # update temp_s based on sampled_iter per epoch
+        # if epoch <= 400:
+        #     compute_mask(model,epoch, temp_increase, args)
         
-        ratio_one = get_ratio_one(model)
-        # logger.info('Current R_O:%.3f'% round(ratio_one,3))
-
-        # Budget-aware adjusting lmbda according to Eq(4)
-        TS = args.target / args.Nbits  # target ratio of ones of masks in the network
-        regularization_loss = 0
-        for m in model.module.mask_modules:
-            regularization_loss += torch.sum(torch.abs(m.mask).sum())
-        
-        classify_loss = criterion(output, target)
-        loss = classify_loss + (args.lmbda*(ratio_one-TS)) * regularization_loss
-
-        # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-
-        torch.distributed.barrier()
-
-        reduced_loss = reduce_mean(loss, args.nprocs)
-        reduced_acc1 = reduce_mean(acc1, args.nprocs)
-        reduced_acc5 = reduce_mean(acc5, args.nprocs)
-
-        losses.update(reduced_loss.item(), images.size(0))
-        top1.update(reduced_acc1.item(), images.size(0))
-        top5.update(reduced_acc5.item(), images.size(0))
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        # with torch.autograd.detect_anomaly():
-        loss.backward()
-        optimizer.step()
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-        lrr = optimizer.state_dict()['param_groups'][0]['lr']
-        if i % args.print_freq == 0:
-        #     logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,losses.avg,top1.avg))
-        # writer.add_scalar('train loss', losses, epoch)
-            progress.display(i)
-
-def validate(val_loader, model, criterion, local_rank, args,logger,writer):
-    batch_time = AverageMeter('Time', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(len(val_loader), [batch_time, losses, top1, top5],
-                             prefix='Test: ')
-
-    # switch to evaluate mode
-    model.eval()
-
-    with torch.no_grad():
-        end = time.time()
-        for i, (images, target) in enumerate(val_loader):
-            images = images.cuda(local_rank, non_blocking=True)
-            target = target.cuda(local_rank, non_blocking=True)
-
-            # compute output
-            output = model(images)
-            loss = criterion(output, target)
-
-            # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-
-            torch.distributed.barrier()
-
-            reduced_loss = reduce_mean(loss, args.nprocs)
-            reduced_acc1 = reduce_mean(acc1, args.nprocs)
-            reduced_acc5 = reduce_mean(acc5, args.nprocs)
-
-            losses.update(reduced_loss.item(), images.size(0))
-            top1.update(reduced_acc1.item(), images.size(0))
-            top5.update(reduced_acc5.item(), images.size(0))
-
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            if i % args.print_freq == 0:
-                progress.display(i)
-
-        # TODO: this should also be done with the ProgressMeter
-        # print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
-        #                                                             top5=top5))
-        logger.info(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
-                                                                    top5=top5))
-
-    return top1, losses
-
-
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self, name, fmt=':f'):
-        self.name = name
-        self.fmt = fmt
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-    def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-        return fmtstr.format(**self.__dict__)
-
-
-class ProgressMeter(object):
-    def __init__(self, num_batches, meters, prefix=""):
-        self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
-        self.meters = meters
-        self.prefix = prefix
-
-    def display(self, batch):
-        entries = [self.prefix + self.batch_fmtstr.format(batch)]
-        entries += [str(meter) for meter in self.meters]
-        print('\t'.join(entries))
-
-    def _get_batch_fmtstr(self, num_batches):
-        num_digits = len(str(num_batches // 1))
-        fmt = '{:' + str(num_digits) + 'd}'
-        return '[' + fmt + '/' + fmt.format(num_batches) + ']'
-
-
-def adjust_learning_rate(optimizer, epoch, args):
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1**(epoch // 30))
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
-def accuracy(output, target, topk=(1, )):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
-
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-        res = []
-        for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
-
-# def compute_mask(model,epoch, temp_increase, args):
-#     for m in model.module.mask_modules:
-#         m.mask_discrete = torch.bernoulli(m.mask)
-#         m.sampled_iter += m.mask_discrete
-#         m.temp_s = temp_increase**m.sampled_iter
-#         # if epoch == args.epochs/2:
-#         #     m.sampled_iter = torch.ones(args.Nbits)
-#         #     m.temp_s = torch.ones(args.Nbits)
-#         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
-
-def get_ratio_one(model):
-    mask = [m.mask for m in model.module.mask_modules]
-    total_ele = 0
-    ones = 0
-    for iter in range(len(mask)):
-        t = mask[iter].numel()
-        o = (mask[iter] >= 0.5).sum().item()
-        # z = (mask_discrete[iter] == 0).sum().item()
-        total_ele += t
-        ones += o
-    ratio_one = ones/total_ele
-    return ratio_one
-
-
-def get_logger(filename, verbosity=1, name=None):
-    level_dict = {0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING}
-    formatter = logging.Formatter(
-        "[%(asctime)s][%(filename)s][line:%(lineno)d][%(levelname)s] %(message)s"
-    )
-    logger = logging.getLogger(name)
-    logger.setLevel(level_dict[verbosity])
- 
-    fh = logging.FileHandler(filename, "w")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
- 
-    sh = logging.StreamHandler()
-    sh.setFormatter(formatter)
-    logger.addHandler(sh)
- 
-    return logger
-
-def tiny_loader(args):
-    # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
-    normalize = transforms.Normalize((0.4802, 0.4481, 0.3975), (0.2770, 0.2691, 0.2821))
-    transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(224), 
-        transforms.RandomHorizontalFlip(0.5), 
-        transforms.ToTensor(),
-        normalize,
-    ])
-    transform_test = transforms.Compose([transforms.Resize(224), transforms.ToTensor(), normalize, ])
-    trainset = datasets.ImageFolder(root=os.path.join(args.data, 'train'), transform=transform_train)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(trainset)
-    
-    valset = datasets.ImageFolder(root=os.path.join(args.data, 'val'), transform=transform_test)
-    val_sampler = torch.utils.data.distributed.DistributedSampler(valset)
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=args.workers)
-    val_loader = torch.utils.data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=args.workers)
-    return train_sampler, val_sampler, train_loader, val_loader
-
-def imagenet_loader(args):
-    # Data loading code
-    traindir = os.path.join(args.data,'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset)
-    train_loader = torch.utils.data.DataLoader(train_dataset,
-                                               batch_size=args.batch_size,
-                                               num_workers=args.workers,
-                                               pin_memory=True,
-                                               sampler=train_sampler)
-
-    val_dataset = datasets.ImageFolder(
-        valdir,
-        transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
-    val_loader = torch.utils.data.DataLoader(val_dataset,
-                                             batch_size=args.batch_size,
-                                             num_workers=4,
-                                             pin_memory=True,
-                                             sampler=val_sampler)
-    return train_sampler, val_sampler, train_loader, val_loader
-
-if __name__ == '__main__':
-    main()
+    TP = model.total_param()
+    avg_bit = args.Nbits * ratio_one
+    logger.info('model size is: %.3f' % TP)
+    logger.info('average bit is: %.3f ' % avg_bit)
+    # plt.plot(np.arange(len(lr)), lr)
+    # plt.savefig('learning rate.jpg')
