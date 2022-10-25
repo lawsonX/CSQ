@@ -274,6 +274,7 @@ if __name__ == '__main__':
             if i % 100 == 0:
                 logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,sum_loss/(i+1),train_acc ))
             writer.add_scalar('train loss', sum_loss / (i + 1), epoch)
+            writer.add_scalar('train loss', ratio_one, epoch)
 
         # test with soft mask
         with torch.no_grad():
@@ -289,7 +290,7 @@ if __name__ == '__main__':
                 correct += (predicted == labels).sum()
                 test_acc = (100 * correct / total)
             logger.info('Test\'s ac is: %.3f%%' % test_acc )
-            writer.add_scalar('Soft Test Acc', test_acc, epoch)
+            writer.add_scalar('Test Acc', test_acc, epoch)
         
         if epoch >= args.solidize:
             # Turn soft mask to discrete
