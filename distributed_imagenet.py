@@ -318,7 +318,7 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
         if i % args.print_freq == 0:
         #     logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,losses.avg,top1.avg))
             progress.display(i)
-        writer.add_scalar('train loss', losses, epoch)
+#         writer.add_scalar('train loss', losses, epoch)
         writer.add_scalar('Ratio_of_Ones_in_mask', ratio_one, epoch)
 
 def validate(val_loader, model, criterion, local_rank, args,logger,writer):
