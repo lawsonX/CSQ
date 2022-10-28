@@ -1,4 +1,6 @@
 '''
+this vgg19bn is for cifar10
+there is only one linear layer at the end
 '''
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
@@ -100,7 +102,7 @@ class BasicBlock(nn.Module):
 
 class VGG19bn(nn.Module):
 
-    def __init__(self, num_classes=1000, Nbits=8, act_bit=0, bin=True):
+    def __init__(self, num_classes=10, Nbits=8, act_bit=0, bin=True):
         super(VGG19bn, self).__init__()
         self.block1 = BasicBlock(3, 64, Nbits=Nbits, act_bit=act_bit, bin=bin)
 
@@ -116,17 +118,18 @@ class VGG19bn(nn.Module):
         self.block5_2 = BasicBlock(512, 512, Nbits=Nbits, act_bit=act_bit, bin=bin)
         
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.fc1 = BitLinear(512*7*7, 4096, Nbits=Nbits, bin=bin)
-        self.dropout1 = nn.Dropout(p=0.5)
-        self.fc2 = BitLinear(4096, 4096, Nbits=Nbits, bin=bin)
-        self.dropout2 = nn.Dropout(p=0.5)
-        self.fc3 = BitLinear(4096, out_features=num_classes, Nbits=Nbits, bin=bin)
-        if act_bit>3:
-            self.relu1 = nn.ReLU6(inplace=True) 
-            self.relu2 = nn.ReLU6(inplace=True) 
-        else:
-            self.relu1 = PACT()
-            self.relu2 = PACT()
+        self.fc = nn.Linear(512,10)
+        # self.fc1 = BitLinear(512*7*7, 4096, Nbits=Nbits, bin=bin)
+        # self.dropout1 = nn.Dropout(p=0.5)
+        # self.fc2 = BitLinear(4096, 4096, Nbits=Nbits, bin=bin)
+        # self.dropout2 = nn.Dropout(p=0.5)
+        # self.fc3 = BitLinear(4096, out_features=num_classes, Nbits=Nbits, bin=bin)
+        # if act_bit>3:
+        #     self.relu1 = nn.ReLU6(inplace=True) 
+        #     self.relu2 = nn.ReLU6(inplace=True) 
+        # else:
+        #     self.relu1 = PACT()
+        #     self.relu2 = PACT()
 
         self.mask_modules = [m for m in self.modules() if type(m) in [BitConv2d, BitLinear]]
         self.temp = 1
@@ -166,17 +169,17 @@ class VGG19bn(nn.Module):
         x = self.maxpool(x)
 
         x = x.view(x.size(0), -1)
-        x = self.fc1(x, self.temp)
-        x = self.relu1(x)
-        x = self.dropout1(x)
-        x = self.fc2(x, self.temp)
-        x= self.relu2(x)
-        x = self.dropout2(x)
-        x = self.fc3(x, self.temp)
+        x = self.fc(x, self.temp)
+        # x = self.relu1(x)
+        # x = self.dropout1(x)
+        # x = self.fc2(x, self.temp)
+        # x= self.relu2(x)
+        # x = self.dropout2(x)
+        # x = self.fc3(x, self.temp)
         return x
 
 if __name__ == '__main__':
-    x = torch.randn(1,3,224,224)
+    x = torch.randn(1,3,32,32)
     model = VGG19bn()
     out = model(x)
     print(out.shape)
