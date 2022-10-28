@@ -117,8 +117,16 @@ class VGG19bn(nn.Module):
         
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.fc1 = BitLinear(512*7*7, 4096, Nbits=Nbits, bin=bin)
+        self.dropout1 = nn.Dropout(p=0.5)
         self.fc2 = BitLinear(4096, 4096, Nbits=Nbits, bin=bin)
+        self.dropout2 = nn.Dropout(p=0.5)
         self.fc3 = BitLinear(4096, out_features=num_classes, Nbits=Nbits, bin=bin)
+        if act_bit>3:
+            self.relu1 = nn.ReLU6(inplace=True) 
+            self.relu2 = nn.ReLU6(inplace=True) 
+        else:
+            self.relu1 = PACT()
+            self.relu2 = PACT()
 
         self.mask_modules = [m for m in self.modules() if type(m) in [BitConv2d, BitLinear]]
         self.temp = 1
@@ -159,7 +167,11 @@ class VGG19bn(nn.Module):
 
         x = x.view(x.size(0), -1)
         x = self.fc1(x, self.temp)
+        x = self.relu1(x)
+        x = self.dropout1(x)
         x = self.fc2(x, self.temp)
+        x= self.relu2(x)
+        x = self.dropout2(x)
         x = self.fc3(x, self.temp)
         return x
 
