@@ -118,7 +118,7 @@ class VGG19bn(nn.Module):
         self.block5_2 = BasicBlock(512, 512, Nbits=Nbits, act_bit=act_bit, bin=bin)
         
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.fc = nn.Linear(512,10)
+        self.fc = BitLinear(512,10)
         # self.fc1 = BitLinear(512*7*7, 4096, Nbits=Nbits, bin=bin)
         # self.dropout1 = nn.Dropout(p=0.5)
         # self.fc2 = BitLinear(4096, 4096, Nbits=Nbits, bin=bin)
