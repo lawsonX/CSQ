@@ -151,7 +151,7 @@ def main_worker(local_rank, nprocs, args):
     logger = get_logger(train_log_filepath)
     logger.info("args = %s", args)
 
-    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:65534')
+    dist.init_process_group(backend='gloo')
     # create model
     # if args.pretrained:
     #     print("=> using pre-trained model '{}'".format(args.arch))
