@@ -106,6 +106,7 @@ parser.add_argument('--final-temp', type=float, default=200, help='temperature a
 parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
 parser.add_argument('--target', type=int, default=3, help='Target Nbit')
 parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
+parser.add_argument('--t0', type=int, default=1, help='number of rewindinngs for learning rate, (T-0 for CosineAnnealingWarmRestarts)')
 
 parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
 parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
@@ -183,7 +184,7 @@ def main_worker(local_rank, nprocs, args):
                                 args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/args.t0), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     cudnn.benchmark = True
 
