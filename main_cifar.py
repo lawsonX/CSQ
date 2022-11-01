@@ -42,6 +42,7 @@ parser.add_argument('--save_file', type=str, default='TIM_res18_A0N8T7_Steplr000
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 parser.add_argument('-a','--arch', default='ResNet', help= 'ResNet for resnet20 on cifar10, ResNet18,VGG19bn for imagenet&TinyImagenet')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
+parser.add_argument('--t0', type=int, default=1, help='number of rewindinngs for learning rate, (T-0 for CosineAnnealingWarmRestarts)')
 
 args = parser.parse_args()
 
@@ -205,7 +206,7 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.decay)
     # optimizer = optim.Adam(model.parameters(),lr = args.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/args.t0), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
     
     logger.info('start training!')
     best_acc = 0
