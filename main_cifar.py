@@ -209,8 +209,8 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/args.t0), T_mult=1, eta_min=0, last_epoch=- 1, verbose=False)
     
     logger.info('start training!')
-    best_acc = 0
-    solid_best_acc =0
+    # best_acc = 0
+    solid_best_acc = 0
     temp_increase = args.final_temp**(1./(args.rewind))
     for epoch in range(1, args.epochs):
         print('\nEpoch: %d' % epoch)
@@ -313,20 +313,23 @@ if __name__ == '__main__':
                     _, _predicted = torch.max(outputs.data, 1)
                     _total += labels.size(0)
                     _correct += (_predicted == labels).sum()
-                    _test_acc = (100 * _correct / total)
-                logger.info('Solid Test\'s ac is: %.3f%%' % _test_acc )
-            ratio_one = get_ratio_one(model)
-            solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
-            torch.save({
-                'model': model.state_dict(),
-                'epoch': epoch,
-                'valid_acc': _test_acc,
-                'solid_ratio_one': ratio_one,
-            }, solid_best_model_path)
-            solid_best_acc = _test_acc
-            _best_epoch = epoch+1
-            avg_bit_ = ratio_one * args.Nbits
-            logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
+                    _test_acc = (100 * _correct / _total)
+                ratio_one = get_ratio_one(model)
+                logger.info('Solid Test\'s ac is: %.3f%%, average bit is %.2f%%' % (_test_acc, ratio_one) )
+
+            if _test_acc > solid_best_acc:
+                solid_best_acc = _test_acc
+                solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
+                torch.save({
+                    'model': model.state_dict(),
+                    'epoch': epoch,
+                    'valid_acc': _test_acc,
+                    'solid_ratio_one': ratio_one,
+                }, solid_best_model_path)
+                ratio_one_ = get_ratio_one(model)
+                best_avg_bit_ = ratio_one_ * args.Nbits
+                best_epoch = epoch
+    logger.info('Best Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, best_avg_bit_, best_epoch))
 
         # update temp_s based on sampled_iter per epoch
         # if epoch <= 400:
