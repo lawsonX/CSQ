@@ -110,7 +110,6 @@ parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth 
 parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
 parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
-parser.add_argument('--t0', type=int, default=1, help='number of rewindinngs for learning rate, (T-0 for CosineAnnealingWarmRestarts)')
 parser.add_argument('--save_file', type=str, default='TIM_CSQvgg19bn_T6N3A0_lr005', help='path for saving trained models')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 
@@ -157,8 +156,8 @@ def main_worker(local_rank, nprocs, args):
     #     print("=> using pre-trained model '{}'".format(args.arch))
     #     model = models.__dict__[args.arch](pretrained=True)
     # else:
-        # print("=> creating model '{}'".format(args.arch))
-        # model = models.__dict__[args.arch]()
+    #     print("=> creating model '{}'".format(args.arch))
+    #     model = models.__dict__[args.arch]()
     model = eval(args.arch)(
         num_classes=args.classes,
         Nbits=args.Nbits,
@@ -184,7 +183,7 @@ def main_worker(local_rank, nprocs, args):
                                 args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/args.t0), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     cudnn.benchmark = True
 
@@ -198,6 +197,7 @@ def main_worker(local_rank, nprocs, args):
         return
     
     temp_increase = 200**(1./(args.rewind))
+    solid_best_acc = 0
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -223,7 +223,7 @@ def main_worker(local_rank, nprocs, args):
             model.temp = temp_increase**_epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
 
-        # train for one epoch
+        # train epoch
         ratio_one = get_ratio_one(model)
         logger.info('Current R_O:%.3f'% round(ratio_one,3))
         train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
@@ -241,15 +241,17 @@ def main_worker(local_rank, nprocs, args):
             solid_acc1, test_loss = validate(val_loader, model, criterion, local_rank, args, logger)
             logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
             ratio_one = get_ratio_one(model)
-            solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
-            torch.save({
-                'model': model.state_dict(),
-                'epoch': epoch,
-                'valid_acc': solid_acc1,
-                'solid_ratio_one': ratio_one,
-            }, solid_best_model_path)
-            solid_best_acc = solid_acc1
-            _best_epoch = epoch+1
+
+            if solid_acc1 > solid_best_acc:
+                solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
+                torch.save({
+                    'model': model.state_dict(),
+                    'epoch': epoch,
+                    'valid_acc': solid_acc1,
+                    'solid_ratio_one': ratio_one,
+                }, solid_best_model_path)
+                solid_best_acc = solid_acc1
+                _best_epoch = epoch
             avg_bit_ = ratio_one * args.Nbits
             logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
 
@@ -319,7 +321,7 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
         if i % args.print_freq == 0:
         #     logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,losses.avg,top1.avg))
             progress.display(i)
-#         writer.add_scalar('train loss', losses, epoch)
+        # writer.add_scalar('train loss', losses, epoch)
         writer.add_scalar('Ratio_of_Ones_in_mask', ratio_one, epoch)
 
 def validate(val_loader, model, criterion, local_rank, args,logger,writer):
