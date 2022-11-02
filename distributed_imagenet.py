@@ -238,7 +238,7 @@ def main_worker(local_rank, nprocs, args):
             for m in model.module.mask_modules:
                 m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
                 m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
-                logger.info(m.mask_discrete)
+                logger.info(m.mask)
             solid_acc1, test_loss = validate(val_loader, model, criterion, local_rank, args, logger)
             logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
             ratio_one = get_ratio_one(model)
