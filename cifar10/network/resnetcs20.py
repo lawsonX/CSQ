@@ -74,24 +74,25 @@ __all__ = ['resnet']
 #    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
 #                     padding=1, bias=False)
                      
-def conv3x3(in_planes, out_planes, stride=1, Nbits=4, bin=True):
+def conv3x3(in_planes, out_planes, stride=1, Nbits=4, bin=True,mask_initial_value=0):
     "3x3 convolution with padding"
     return BitConv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False, Nbits = Nbits, bin=bin)
+                     padding=1, bias=False, Nbits = Nbits, bin=bin,
+                     mask_initial_value=mask_initial_value)
 
 
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, Nbits=4, act_bit=4, bin=True):
+    def __init__(self, inplanes, planes, stride=1, downsample=None, Nbits=4, act_bit=4, bin=True,mask_initial_value=0):
         super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(inplanes, planes, stride, Nbits=Nbits, bin=bin)
+        self.conv1 = conv3x3(inplanes, planes, stride, Nbits=Nbits, bin=bin,mask_initial_value=mask_initial_value)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = conv3x3(planes, planes, Nbits=Nbits, bin=bin)
+        self.conv2 = conv3x3(planes, planes, Nbits=Nbits, bin=bin,mask_initial_value=mask_initial_value)
         self.bn2 = nn.BatchNorm2d(planes)
         if act_bit>3:
-            self.relu1 = nn.ReLU6(inplace=True) 
-            self.relu2 = nn.ReLU6(inplace=True) 
+            self.relu1 = nn.ReLU6(inplace=True)
+            self.relu2 = nn.ReLU6(inplace=True)
         else:
             self.relu1 = PACT()
             self.relu2 = PACT()
@@ -99,17 +100,17 @@ class BasicBlock(nn.Module):
         self.stride = stride
         self.act_bit = act_bit
 
-    def forward(self, x, temp):
+    def forward(self, x, temp, ticket):
         # x, temp = input
         residual = x
 
-        out = self.conv1(x, temp)
+        out = self.conv1(x, temp, ticket)
         out = self.bn1(out)
         out = self.relu1(out)
 
         out = STE.apply(out,self.act_bit)
 
-        out = self.conv2(out, temp)
+        out = self.conv2(out, temp, ticket)
         out = self.bn2(out)
 
         if self.downsample is not None:
@@ -122,48 +123,10 @@ class BasicBlock(nn.Module):
 
         return out
 
-
-class Bottleneck(nn.Module):
-    expansion = 4
-
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * 4)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x):
-        residual = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            residual = self.downsample(x)
-
-        out += residual
-        out = self.relu(out)
-
-        return out
-
 class MaskedNet(nn.Module):
     def __init__(self):
         super(MaskedNet, self).__init__()
+        self.ticket = False
 
     def checkpoint(self):
         for m in self.mask_modules: m.checkpoint()
@@ -181,7 +144,7 @@ class MaskedNet(nn.Module):
         for m in self.mask_modules: m.prune(self.temp)
 
 class ResStage(nn.Module):
-    def __init__(self, in_planes, out_planes, stride, padding, Nbits=4,act_bit=0, bin=True, bias=False):
+    def __init__(self, in_planes, out_planes, stride, padding, Nbits=4,act_bit=0, bin=True, bias=False, mask_initial_value=0.):
         super(ResStage, self).__init__()
         downsample = None
         if stride != 1 or in_planes != out_planes:
@@ -190,32 +153,32 @@ class ResStage(nn.Module):
                 nn.BatchNorm2d(out_planes),
             )
             
-        self.block1 = BasicBlock(in_planes, out_planes, stride=stride, downsample=downsample, Nbits=Nbits, act_bit=act_bit, bin=bin)
-        self.block2 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin)
-        self.block3 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin)
+        self.block1 = BasicBlock(in_planes, out_planes, stride=stride, downsample=downsample, Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
+        self.block2 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
+        self.block3 = BasicBlock(out_planes, out_planes, stride=1, downsample=None, Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
 
-    def forward(self, x, temp):
-        out = self.block1(x, temp)
-        out = self.block2(out, temp)
-        out = self.block3(out, temp)
+    def forward(self, x, temp, ticket):
+        out = self.block1(x, temp, ticket)
+        out = self.block2(out, temp, ticket)
+        out = self.block3(out, temp, ticket)
         return out
 
 class ResNet(MaskedNet):
-    def __init__(self, num_classes=10, Nbits=8,act_bit=0, bin=True):
+    def __init__(self, num_classes=10, Nbits=8,act_bit=0, bin=True, mask_initial_value=0.):
         super(ResNet, self).__init__()
 
-        self.conv1 = BitConv2d(3, 16, kernel_size=3, padding=1,bias=False, Nbits=Nbits, bin=bin)
+        self.conv1 = BitConv2d(3, 16, kernel_size=3, padding=1,bias=False, Nbits=Nbits, bin=bin, mask_initial_value=mask_initial_value)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
-        self.layer1 = ResStage(16,16,1,1,Nbits,act_bit,bin=bin)
-        self.layer2 = ResStage(16,32,2,1,Nbits,act_bit,bin=bin)
-        self.layer3 = ResStage(32,64,2,1,Nbits,act_bit,bin=bin)
-        # self.layer4 = ResStage(64,128,2,1,Nbits,bin=bin)
+        self.layer1 = ResStage(16,16,1,1,Nbits,act_bit,bin=bin, mask_initial_value=mask_initial_value)
+        self.layer2 = ResStage(16,32,2,1,Nbits,act_bit,bin=bin, mask_initial_value=mask_initial_value)
+        self.layer3 = ResStage(32,64,2,1,Nbits,act_bit,bin=bin, mask_initial_value=mask_initial_value)
+
         self.avgpool = nn.AvgPool2d(8)
-        self.fc = BitLinear(64, out_features=num_classes, Nbits=Nbits, bin=bin)
+        self.fc = BitLinear(64, out_features=num_classes, Nbits=Nbits, bin=bin,mask_initial_value=mask_initial_value)
         self.mask_modules = [m for m in self.modules() if type(m) in [BitConv2d, BitLinear] ]
         self.temp = 1
-        self.temp_s = torch.Tensor(Nbits)
+
 
         for m in self.modules():
             if isinstance(m, BitConv2d):
@@ -232,17 +195,16 @@ class ResNet(MaskedNet):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        x = self.conv1(x, self.temp)
+        x = self.conv1(x, self.temp, self.ticket)
         x = self.bn1(x)
         x = self.relu(x)
         
-        x = self.layer1(x, self.temp)
-        x = self.layer2(x, self.temp)
-        x = self.layer3(x, self.temp)
-        # x = self.layer4(x, self.temp)
+        x = self.layer1(x, self.temp, self.ticket)
+        x = self.layer2(x, self.temp, self.ticket)
+        x = self.layer3(x, self.temp, self.ticket)
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.fc(x, self.temp)
+        x = self.fc(x, self.temp, self.ticket)
 
         return x
     
