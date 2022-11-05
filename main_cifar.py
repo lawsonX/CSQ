@@ -14,9 +14,9 @@ import torch.backends.cudnn as cudnn
 import numpy as np
 import random
 from cifar10.network.resnetcs20 import ResNet
+from cifar10.network.vgg import VGG19bn
 from imagenet.networks.resnetcs18 import ResNet18
 from imagenet.networks.resnetcs50 import ResNet50
-from imagenet.networks.vgg import VGG19bn
 from torch.utils.tensorboard import SummaryWriter
 import logging
 import matplotlib.pyplot as plt
@@ -26,9 +26,8 @@ parser = argparse.ArgumentParser(description='Training a ResNet on CIFAR-10 with
 # parser.add_argument('--which-gpu', type=int, default=0, help='which GPU to use')
 parser.add_argument('--data',metavar='DIR',default='/home/datasets/imagenet',help='path to dataset')
 parser.add_argument('--batch-size', type=int, default=96, metavar='N', help='input batch size for training/val/test (default: 128)')
-parser.add_argument('--epochs', type=int, default=440, help='number of epochs to train (default: 300)')
-parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
-parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
+parser.add_argument('--epochs', type=int, default=400, help='number of epochs to train (default: 300)')
+parser.add_argument('--ticket', type=int, default=300, help='The epoch to turn the cs weight&mask to binary')
 parser.add_argument('--classes', type=int, default=10, help='class of output')
 parser.add_argument('--Nbits', type=int, default=6, help='quantization bitwidth for weight')
 parser.add_argument('--target', type=int, default=4, help='Target Nbit')
@@ -43,6 +42,7 @@ parser.add_argument('--log_file', type=str, default='train.log', help='save path
 parser.add_argument('-a','--arch', default='ResNet', help= 'ResNet for resnet20 on cifar10, ResNet18,VGG19bn for imagenet&TinyImagenet')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
 parser.add_argument('--t0', type=int, default=1, help='number of rewindinngs for learning rate, (T-0 for CosineAnnealingWarmRestarts)')
+parser.add_argument('--mask-initial-value', type=float, default=0., help='initial value for mask parameters')
 
 args = parser.parse_args()
 
@@ -78,21 +78,9 @@ def get_ratio_one(model):
 
 def adjust_learning_rate(optimizer, epoch, args):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1 ** (epoch // 50))
+    lr = args.lr * (0.1 ** (epoch // 30))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-# def compute_mask(model,epoch, temp_increase, args):
-#     for m in model.mask_modules:
-#         # m.mask_discrete = torch.bernoulli(m.mask)
-#         # m.sampled_iter += m.mask_discrete
-#         m.temp_s = temp_increase**epoch
-#         if epoch == 201:
-#             # m.sampled_iter = torch.ones(args.Nbits).cuda()
-#             m.temp_s = torch.ones(args.Nbits).cuda() # rewind
-        # print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
-        # if epoch in [args.epochs/2, args.epochs] :
-        #     print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def tiny_loader(args):
     # data_dir = '/home/xiaolirui/datasets/tiny-imagenet-200'
@@ -198,7 +186,8 @@ if __name__ == '__main__':
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
-        bin=True
+        bin=True,
+        mask_initial_value = args.mask_initial_value
         ).to(device)
 
 
@@ -211,7 +200,7 @@ if __name__ == '__main__':
     logger.info('start training!')
     # best_acc = 0
     solid_best_acc = 0
-    temp_increase = args.final_temp**(1./(args.rewind))
+    temp_increase = args.final_temp**(1./(args.ticket))
     for epoch in range(1, args.epochs):
         print('\nEpoch: %d' % epoch)
         # adjust_learning_rate(optimizer, epoch, args)
@@ -235,12 +224,13 @@ if __name__ == '__main__':
         total = 0.0
         
         # update global temp
-        if epoch <= args.rewind:
-            model.temp = temp_increase**epoch
-        else:
-            _epoch = epoch - args.rewind # rewind tempreture to 1
-            model.temp = temp_increase**_epoch
+        model.temp = temp_increase**epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
+
+        if epoch >= args.ticket:
+            model.ticket = True
+        else: 
+            model.ticket = False
 
         for i, data in enumerate(trainloader, 0):
             length = len(trainloader)
@@ -292,48 +282,9 @@ if __name__ == '__main__':
                 test_acc = (100 * correct / total)
             logger.info('Test\'s ac is: %.3f%%' % test_acc )
             writer.add_scalar('Test Acc', test_acc, epoch)
-        
-        if epoch >= args.solidize:
-            # Turn soft mask to discrete
+        if model.ticket == True:
             for m in model.mask_modules:
-                m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
-                m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
-                # m.mask_discrete = torch.bernoulli(m.mask)
-                # logger.info(m.mask)
                 logger.info(m.mask)
-            # test again after finalizing the soft bitmask to 0&1
-            with torch.no_grad():
-                _correct = 0
-                _total = 0
-                for data in testloader:
-                    model.eval()
-                    images, labels = data
-                    images, labels = images.to(device), labels.to(device)
-                    outputs = model(images)
-                    _, _predicted = torch.max(outputs.data, 1)
-                    _total += labels.size(0)
-                    _correct += (_predicted == labels).sum()
-                    _test_acc = (100 * _correct / _total)
-                ratio_one = get_ratio_one(model)
-                logger.info('Solid Test\'s ac is: %.3f%%, average bit is %.2f%%' % (_test_acc, ratio_one) )
-
-            if _test_acc > solid_best_acc:
-                solid_best_acc = _test_acc
-                solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
-                torch.save({
-                    'model': model.state_dict(),
-                    'epoch': epoch,
-                    'valid_acc': _test_acc,
-                    'solid_ratio_one': ratio_one,
-                }, solid_best_model_path)
-                ratio_one_ = get_ratio_one(model)
-                best_avg_bit_ = ratio_one_ * args.Nbits
-                best_epoch = epoch
-    logger.info('Best Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, best_avg_bit_, best_epoch))
-
-        # update temp_s based on sampled_iter per epoch
-        # if epoch <= 400:
-        #     compute_mask(model,epoch, temp_increase, args)
         
     TP = model.total_param()
     avg_bit = args.Nbits * ratio_one
