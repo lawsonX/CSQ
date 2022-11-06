@@ -212,6 +212,8 @@ def main_worker(local_rank, nprocs, args):
         train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
         # evaluate on validation set
         validate(val_loader, model, criterion, local_rank, args, logger,writer)
+        ratio_one = get_ratio_one(model)
+        logger.info(' Ticket: ratio of ones:%.3f'% round(ratio_one,3))
         if model.module.ticket == True:
             for m in model.module.mask_modules:
                 logger.info(m.mask)
