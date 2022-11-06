@@ -118,7 +118,7 @@ class VGG19bn(nn.Module):
         self.block5_2 = BasicBlock(512, 512, Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
         
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.fc = BitLinear(512,10)
+        self.fc = BitLinear(512,10,Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
 
         self.mask_modules = [m for m in self.modules() if type(m) in [BitConv2d, BitLinear]]
         self.temp = 1
