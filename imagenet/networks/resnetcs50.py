@@ -219,7 +219,7 @@ class ResNet50(MaskedNet):
         self.layer4_2 = Bottleneck(2048, 512, 2048, stride=1, downsample=False, Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = BitLinear(2048, out_features=num_classes,  Nbits=Nbits, act_bit=act_bit, bin=bin, mask_initial_value=mask_initial_value)
+        self.fc = BitLinear(2048, out_features=num_classes,  Nbits=Nbits, bias=False, mask_initial_value=mask_initial_value)
         
         self.mask_modules = [m for m in self.modules() if type(m) in [BitConv2d, BitLinear] ]
         self.temp = 1
