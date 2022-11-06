@@ -22,7 +22,6 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 from imagenet.networks.resnetcs18 import ResNet18
 from imagenet.networks.resnetcs50 import ResNet50
-from imagenet.networks.vgg import VGG19bn
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data',
@@ -41,7 +40,7 @@ parser.add_argument('-j',
                     metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs',
-                    default=440,
+                    default=300,
                     type=int,
                     metavar='N',
                     help='number of total epochs to run')
@@ -101,15 +100,14 @@ parser.add_argument('--seed',
                     type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--classes', type=int, default=200, help='class of output')
+parser.add_argument('--mask-initial-value', type=float, default=0., help='initial value for mask parameters')
 parser.add_argument('--lmbda', type=float, default=0.001, help='lambda for L1 mask regularization (default: 1e-8)')
 parser.add_argument('--final-temp', type=float, default=200, help='temperature at the end of each round (default: 200)')
 parser.add_argument('--act', type=int, default=0, help='quantization bitwidth for activation')
 parser.add_argument('--target', type=int, default=3, help='Target Nbit')
 parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth for weight')
-parser.add_argument('--t0', type=int, default=1, help='number of rewindinngs for learning rate, (T-0 for CosineAnnealingWarmRestarts)')
 
-parser.add_argument('--solidize', type=int, default=430, help='The epoch to solidize the mask')
-parser.add_argument('--rewind', type=int, default=200, help='The epoch to rewind the global tempreture')
+parser.add_argument('--ticket', type=int, default=200, help='The epoch to turn the cs weight&mask to binary')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
 parser.add_argument('--save_file', type=str, default='TIM_CSQvgg19bn_T6N3A0_lr005', help='path for saving trained models')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
@@ -128,11 +126,6 @@ def main():
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         cudnn.deterministic = True
-        # warnings.warn('You have chosen to seed training. '
-        #               'This will turn on the CUDNN deterministic setting, '
-        #               'which can slow down your training considerably! '
-        #               'You may see unexpected behavior when restarting '
-        #               'from checkpoints.')
 
     main_worker(args.local_rank, args.nprocs, args)
 
@@ -152,18 +145,12 @@ def main_worker(local_rank, nprocs, args):
     logger.info("args = %s", args)
 
     dist.init_process_group(backend='nccl')
-    # create model
-    # if args.pretrained:
-    #     print("=> using pre-trained model '{}'".format(args.arch))
-    #     model = models.__dict__[args.arch](pretrained=True)
-    # else:
-    #     print("=> creating model '{}'".format(args.arch))
-    #     model = models.__dict__[args.arch]()
     model = eval(args.arch)(
         num_classes=args.classes,
         Nbits=args.Nbits,
         act_bit = args.act,
-        bin=True
+        bin=True,
+        mask_initial_value = args.mask_initial_value
         )
 
     torch.cuda.set_device(local_rank)
@@ -184,7 +171,7 @@ def main_worker(local_rank, nprocs, args):
                                 args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/args.t0), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     cudnn.benchmark = True
 
@@ -197,8 +184,7 @@ def main_worker(local_rank, nprocs, args):
         validate(val_loader, model, criterion, local_rank, args, logger)
         return
     
-    temp_increase = 200**(1./(args.rewind))
-    solid_best_acc = 0
+    temp_increase = 200**(1./(args.ticket))
     for epoch in range(args.start_epoch, args.epochs):
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
@@ -215,50 +201,23 @@ def main_worker(local_rank, nprocs, args):
         else:
             if epoch > args.start_epoch:
                 scheduler.step()
-        
+        if epoch >= args.ticket:
+            model.ticket = True
+        else: 
+            model.ticket = False
         # update global temp
-        if epoch <= args.rewind:
-            model.temp = temp_increase**epoch
-        else:
-            _epoch = epoch - args.rewind
-            model.temp = temp_increase**_epoch
+        model.temp = temp_increase**epoch
         logger.info('Current global temp:%.3f'% round(model.temp,3))
-
         # train epoch
-        ratio_one = get_ratio_one(model)
-        logger.info('Current R_O:%.3f'% round(ratio_one,3))
         train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer)  
         # evaluate on validation set
-        acc1,Test_losses = validate(val_loader, model, criterion, local_rank, args, logger,writer)
-        # logger.info('Soft Test\'s ac is: %.3f%%' % acc1 )
-        # writer.add_scalar('Soft Test Acc', acc1, epoch)
-
-        # validate again based on solid bit mask
-        if epoch > args.solidize:
+        validate(val_loader, model, criterion, local_rank, args, logger,writer)
+        if model.module.ticket == True:
             for m in model.module.mask_modules:
-                m.mask= torch.where(m.mask >= 0.5, torch.full_like(m.mask, 1), m.mask)
-                m.mask= torch.where(m.mask < 0.5, torch.full_like(m.mask, 0), m.mask)
                 logger.info(m.mask)
-            solid_acc1, test_loss = validate(val_loader, model, criterion, local_rank, args, logger，writer)
-            logger.info('Solid Test\'s ac is: %.3f%%' % solid_acc1 )
-            ratio_one = get_ratio_one(model)
-
-            if solid_acc1 > solid_best_acc:
-                solid_best_model_path = os.path.join(*[save_dir, 'solid_model_best.pt'])
-                torch.save({
-                    'model': model.state_dict(),
-                    'epoch': epoch,
-                    'valid_acc': solid_acc1,
-                    'solid_ratio_one': ratio_one,
-                }, solid_best_model_path)
-                solid_best_acc = solid_acc1
-                _best_epoch = epoch
-            avg_bit_ = ratio_one * args.Nbits
-            logger.info('Solid Accuracy is %.3f%% , average bit is %.2f%% at epoch %d' %  (solid_best_acc, avg_bit_, _best_epoch))
-
-        # if epoch <= args.epochs*0.95:
-        #     compute_mask(model, epoch, temp_increase, args)
-
+                logger.info("--------------------------------------------------------")
+        else:
+            logger.info("--------------------------------------------------------")
 
 
 def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, logger,writer):
@@ -274,6 +233,7 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
     # switch to train mode
     model.train()
     end = time.time()
+
     for i, (images, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
@@ -323,7 +283,9 @@ def train(train_loader, model, criterion, optimizer, epoch, local_rank, args, lo
         #     logger.info('Epoch:[{}]\t lr={:.4f}\t Ratio_ones={:.5f}\t loss={:.5f}\t acc={:.3f}'.format(epoch,lrr,ratio_one,losses.avg,top1.avg))
             progress.display(i)
         # writer.add_scalar('train loss', losses, epoch)
-        writer.add_scalar('Ratio_of_Ones_in_mask', ratio_one, epoch)
+    # ratio_one = get_ratio_one(model)
+    logger.info('Current R_O:%.3f'% round(ratio_one,3))
+    writer.add_scalar('Ratio_of_Ones_in_mask', ratio_one, epoch)
 
 def validate(val_loader, model, criterion, local_rank, args,logger,writer):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -365,14 +327,8 @@ def validate(val_loader, model, criterion, local_rank, args,logger,writer):
 
             if i % args.print_freq == 0:
                 progress.display(i)
-
-        # TODO: this should also be done with the ProgressMeter
-        # print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
-        #                                                             top5=top5))
         logger.info(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'.format(top1=top1,
                                                                     top5=top5))
-
-    return top1, losses
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -444,16 +400,6 @@ def accuracy(output, target, topk=(1, )):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
-
-# def compute_mask(model,epoch, temp_increase, args):
-#     for m in model.module.mask_modules:
-#         m.mask_discrete = torch.bernoulli(m.mask)
-#         m.sampled_iter += m.mask_discrete
-#         m.temp_s = temp_increase**m.sampled_iter
-#         # if epoch == args.epochs/2:
-#         #     m.sampled_iter = torch.ones(args.Nbits)
-#         #     m.temp_s = torch.ones(args.Nbits)
-#         print('sample_iter:', m.sampled_iter.tolist(), '  |  temp_s:', [round(item,3) for item in m.temp_s.tolist()])
 
 def get_ratio_one(model):
     mask = [m.mask for m in model.module.mask_modules]
