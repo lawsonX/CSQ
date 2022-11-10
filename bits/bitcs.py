@@ -109,6 +109,8 @@ class BitLinear(Module):
             self.pweight = Parameter(torch.Tensor(out_features, in_features, Nbits))
             self.nweight = Parameter(torch.Tensor(out_features, in_features, Nbits))
             self.scale = Parameter(torch.Tensor(1))
+            self.init_pweight = Parameter(torch.zeros_like(self.pweight))
+            self.init_nweight = Parameter(torch.zeros_like(self.nweight))
             self.init_mask() # init bit mask
 
             if bias:
@@ -223,8 +225,8 @@ class BitLinear(Module):
         if self.bin:
             dev = self.pweight.device
             self.mask = self.compute_mask(temp, ticket)
-#             pweight = self.compute_weight(self.pweight, temp, ticket)
-#             nweight = self.compute_weight(self.nweight, temp, ticket)
+            # pweight = self.compute_weight(self.pweight, temp, ticket)
+            # nweight = self.compute_weight(self.nweight, temp, ticket)
             pweight = torch.sigmoid(temp*self.pweight)
             nweight = torch.sigmoid(temp*self.nweight)
             weight = torch.mul(pweight-nweight, self.exps)
@@ -247,11 +249,14 @@ class BitLinear(Module):
         else:
             return F.linear(input, self.weight, self.bias)
 
-    # def checkpoint(self):
-    #     self.init_weight.data = self.weight.clone()       
+    def checkpoint(self):
+        self.init_pweight.data = self.pweight.clone()
+        self.init_nweight.data = self.nweight.clone()    
         
-    # def rewind_weights(self):
-    #     self.weight.data = self.init_weight.clone()
+    def rewind_weights(self):
+        self.pweight.data = self.init_pweight.clone()
+        self.nweight.data = self.init_nweight.clone()
+
 ############################################################################################################################################################
 
 ## Convolutional Layer, modified from https://pytorch.org/docs/stable/_modules/torch/nn/modules/conv.html
@@ -300,10 +305,14 @@ class Bit_ConvNd(Module):
                 self.pweight = Parameter(torch.Tensor(in_channels, out_channels // groups, *kernel_size, Nbits))
                 self.nweight = Parameter(torch.Tensor(in_channels, out_channels // groups, *kernel_size, Nbits))
                 self.scale = Parameter(torch.Tensor(1))
+                self.init_pweight = Parameter(torch.zeros_like(self.pweight))
+                self.init_nweight = Parameter(torch.zeros_like(self.nweight))
             else:
                 self.pweight = Parameter(torch.Tensor(out_channels, in_channels // groups, *kernel_size, Nbits))
                 self.nweight = Parameter(torch.Tensor(out_channels, in_channels // groups, *kernel_size, Nbits))
                 self.scale = Parameter(torch.Tensor(1))
+                self.init_pweight = Parameter(torch.zeros_like(self.pweight))
+                self.init_nweight = Parameter(torch.zeros_like(self.nweight))
                 
             if bias:
                 self.pbias = Parameter(torch.Tensor(out_channels, Nbits))
@@ -454,11 +463,10 @@ class BitConv2d(Bit_ConvNd):
         if self.bin:
             dev = self.pweight.device
             self.mask = self.compute_mask(temp, ticket)
-#             pweight = self.compute_weight(self.pweight, temp, ticket)
-#             nweight = self.compute_weight(self.nweight, temp, ticket)
+            # pweight = self.compute_weight(self.pweight, temp, ticket)
+            # nweight = self.compute_weight(self.nweight, temp, ticket)
             pweight = torch.sigmoid(temp*self.pweight)
             nweight = torch.sigmoid(temp*self.nweight)
-            # import pdb; pdb.set_trace()
             weight = torch.mul(pweight-nweight, self.exps)
             masked_weight = weight * self.mask
             weight =  torch.sum(masked_weight,dim=4) * self.scale
@@ -481,13 +489,13 @@ class BitConv2d(Bit_ConvNd):
             print('Conv bin is False')
             return self.conv2d_forward(input, self.weight, self.bias)
 
-    # def checkpoint(self):
-    #     self.init_pweight.data = self.pweight.clone()   
-    #     self.init_nweight.data = self.nweight.clone()      
+    def checkpoint(self):
+        self.init_pweight.data = self.pweight.clone()   
+        self.init_nweight.data = self.nweight.clone()      
         
-    # def rewind_weights(self):
-    #     self.pweight.data = self.init_pweight.clone()
-    #     self.nweight.data = self.init_nweight.clone()
+    def rewind_weights(self):
+        self.pweight.data = self.init_pweight.clone()
+        self.nweight.data = self.init_nweight.clone()
 
 if __name__ == '__main__':
     def conv3x3(in_planes, out_planes, stride=1, Nbits=8, bin=True,mask_initial_value=0.):
