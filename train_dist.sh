@@ -6,7 +6,7 @@
 # --Nbits 6 --target 3 --act 0 \
 # --save_file "IMG_res18_n6t3a0_lr1wp_e300t200"
 
-CUDA_VISIBLE_DEVICES=6,7,8,9 python3 -m torch.distributed.launch --nproc_per_node=4 dist_imag_cs.py \
+CUDA_VISIBLE_DEVICES=6,7,8,9 python3 -m torch.distributed.launch --nproc_per_node=4 dist_img_cs.py \
 --data "/home/zhen/imagenet12" \
 --classes 1000 --arch "ResNet50" \
 --batch-size 1024 --lr 0.1 --warmup --t0 1 \
