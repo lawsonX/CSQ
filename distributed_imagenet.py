@@ -26,7 +26,7 @@ from imagenet.networks.resnetcs50 import ResNet50
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data',
                     metavar='DIR',
-                    default='/home/xiaolirui/workspace/datasets/tiny-imagenet-200',
+                    default='/home/zhen/imagenet12',
                     help='path to dataset')
 parser.add_argument('-a',
                     '--arch',
@@ -35,7 +35,7 @@ parser.add_argument('-a',
                     help='default: ResNet18')
 parser.add_argument('-j',
                     '--workers',
-                    default=8,
+                    default=4,
                     type=int,
                     metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -109,7 +109,7 @@ parser.add_argument('--Nbits', type=int, default=8, help='quantization bitwidth 
 
 parser.add_argument('--ticket', type=int, default=200, help='The epoch to turn the cs weight&mask to binary')
 parser.add_argument('--warmup',dest='warmup',action='store_true',help='warmup learning rate for the first 5 epochs')
-parser.add_argument('--save_file', type=str, default='TIM_CSQvgg19bn_T6N3A0_lr005', help='path for saving trained models')
+parser.add_argument('--save_file', type=str, default='train_resnet', help='path for saving trained models')
 parser.add_argument('--log_file', type=str, default='train.log', help='save path of weight and log files')
 
 def reduce_mean(tensor, nprocs):
