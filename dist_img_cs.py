@@ -195,7 +195,7 @@ def main_worker(local_rank, nprocs, args):
             print('\t--------- Epoch {} -----------'.format(epoch))
             train_sampler.set_epoch(epoch)
             val_sampler.set_epoch(epoch)
-            if outer_round == 0 and epoch == args.rewind: model.checkpoint()
+            if outer_round == 0 and epoch == args.rewind: model.module.checkpoint()
             if args.warmup:
                 if epoch <= 5:
                     step = epoch/5
