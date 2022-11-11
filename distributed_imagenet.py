@@ -192,7 +192,7 @@ def main_worker(local_rank, nprocs, args):
         # adjust_learning_rate(optimizer, epoch, args)
         if args.warmup:
             if epoch <= 5:
-                step = epoch/5
+                step = (epoch+1)/5
                 lr = args.lr * step
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr
