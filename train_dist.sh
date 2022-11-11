@@ -10,7 +10,7 @@ CUDA_VISIBLE_DEVICES=6,7,8,9 python3 -m torch.distributed.launch --nproc_per_nod
 --data "/home/zhen/imagenet12" \
 --classes 1000 --arch "ResNet50" \
 --batch-size 1024 --lr 0.1 --warmup --t0 1 \
---rounds 3 --rewind 2 --lmbda 0.1 \
+--rounds 3 --rewind 2 --lmbda 0.001 \
 --epochs 90 \
 --Nbits 8 --target 4 --act 4 \
 --save_file "IMG_res50_n8t4a4_e90r3"
