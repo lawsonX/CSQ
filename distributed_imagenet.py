@@ -171,7 +171,7 @@ def main_worker(local_rank, nprocs, args):
                                 args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=int(args.epochs/2), T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=1, T_mult=1, eta_min=0, last_epoch=-1, verbose=False)
 
     cudnn.benchmark = True
 
