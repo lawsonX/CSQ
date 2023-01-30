@@ -1,6 +1,6 @@
 ## CSQ 
     
-    Implementation of Growing Mixed-Precision Quantization Scheme with Bi-level Continuous Sparsification (CSQ)
+Implementation of Growing Mixed-Precision Quantization Scheme with Bi-level Continuous Sparsification (CSQ)
  
 ### core of bit-level continuous sparsification
     bits/bitcs.py BitLinear, BitConv2d
@@ -36,6 +36,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m torch.distributed.launch --nproc_per_nod
 
 ### Related Codebase
 
-    https://github.com/yanghr/BSQ
-    https://github.com/lolemacs/continuous-sparsification
+https://github.com/yanghr/BSQ
+https://github.com/lolemacs/continuous-sparsification
 
