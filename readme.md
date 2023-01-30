@@ -1,4 +1,7 @@
 ## CSQ 
+    
+    Implementation of Growing Mixed-Precision Quantization Scheme with Bi-level Continuous Sparsification (CSQ)
+ 
 ### core of bit-level continuous sparsification
     bits/bitcs.py BitLinear, BitConv2d
     
