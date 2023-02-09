@@ -6,10 +6,8 @@ Implementation for Growing Mixed-Precision Quantization Scheme with Bi-level Con
     bits/bitcs.py BitLinear, BitConv2d
     
 
-### Run experiments
+### Run experiments Example
 1. train Cifar10 
-    
-    Only support Single GPU training, no need to train rounds
 
 ```
 CUDA_VISIBLE_DEVICES=0 python main_cifar.py \
@@ -20,8 +18,6 @@ CUDA_VISIBLE_DEVICES=0 python main_cifar.py \
 ```
 
 2. Train Imagenet-1000
-
-    supporting ddp; need to train a few rounds
 
 ```
 CUDA_VISIBLE_DEVICES=0,1,2,3 python3 -m torch.distributed.launch --nproc_per_node=4 dist_img_cs.py \
